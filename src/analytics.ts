@@ -6,7 +6,6 @@ export type Launch = {
   descentTime: number
   parachuteSize: number
   rocketMass: number
-  motorMass: number
   windSpeed: number
   airPressure: number
   humidity: number
@@ -21,7 +20,7 @@ export type Model = {
   sampleSize: number
 }
 
-export const totalMass = (launch: Launch) => launch.rocketMass + launch.motorMass
+export const totalMass = (launch: Launch) => launch.rocketMass
 
 export function linearRegression(points: Array<{ x: number; y: number }>): Model | null {
   if (points.length < 3) return null
