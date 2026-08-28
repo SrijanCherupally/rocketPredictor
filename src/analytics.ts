@@ -9,6 +9,7 @@ export type Launch = {
   windSpeed: number
   airPressure: number
   humidity: number
+  temperature: number
   notes?: string
 }
 
