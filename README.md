@@ -2,7 +2,7 @@
 
 Apogee is a web-based flight logbook and prediction dashboard for TARC rocket teams. It records launch results, visualizes historical performance, and estimates the rocket mass most likely to reach a selected target altitude.
 
-The current prototype stores data in the browser with `localStorage`. The React/Vite structure is intended to support a future shared online database, hosted deployment, custom domain, and mobile clients.
+When Supabase is configured, authenticated cloud storage is the source of truth. The app supports email/password accounts, first-login migration from browser storage, real-time multi-device updates, and local JSON backups. Without the public Supabase variables, it runs in local-only mode.
 
 ## Features
 
@@ -41,12 +41,57 @@ The current prototype stores data in the browser with `localStorage`. The React/
 - Recharts
 - lucide-react
 - ESLint with flat configuration
-- Browser `localStorage` for prototype persistence
+- Supabase Auth, Postgres, row-level security, and Realtime for cloud persistence
+- Browser `localStorage` as a local-only fallback, migration source, and backup cache
+- GitHub Pages deployment via GitHub Actions
 
 ## Requirements
 
 - Node.js 18 or newer is recommended.
 - npm
+
+## Cloud setup with Supabase
+
+Cloud mode requires a Supabase project. The frontend uses only the public project URL and publishable anonymous key; never put a Supabase service-role key in frontend code, `.env.local`, GitHub secrets used by the browser build, or any committed file.
+
+1. Create a Supabase project.
+2. In the Supabase SQL Editor, run [`supabase/migrations/0001_cloud_workspace.sql`](supabase/migrations/0001_cloud_workspace.sql). It creates the launches and preferences tables, enables row-level security, and registers both tables for Realtime.
+3. In **Authentication → Providers**, enable Email. Choose whether email confirmation is required for new accounts.
+4. In **Authentication → URL Configuration**, add both redirect URLs:
+   - Local development: `http://localhost:5173/`
+   - GitHub Pages: `https://<your-github-owner>.github.io/rocketPredictor/`
+5. Create `.env.local` in the repository root:
+
+```text
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-publishable-anon-key
+```
+
+These are Vite build-time public variables. Do not use a service-role or secret key here.
+
+Run locally with cloud mode enabled:
+
+```bash
+npm run dev
+```
+
+On the first sign-in, Apogee reads the existing `apogee-launches-v1` records in that browser and asks whether to transfer them. The import is idempotent per account and launch ID, writes the migration marker only after success, and leaves the local backup intact. A later sign-in on another device will load the same cloud workspace.
+
+For GitHub Pages, add these repository **Actions secrets** under **Settings → Secrets and variables → Actions**:
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+
+The deployment workflow injects them only while building the browser bundle. GitHub Pages is static, so the values must be configured before deployment.
+
+## Cloud behavior and safety
+
+- Every launch and preference row is owned by the authenticated user. Postgres row-level security prevents one account from reading or changing another account's data.
+- The same account can be signed in on multiple devices at once. Launch inserts, edits, and deletes are broadcast through Supabase Realtime.
+- Edits and deletes use a version number. If another device changed the same flight first, the later operation is rejected instead of silently overwriting it; reload the current flight before trying again.
+- Cloud state is loaded before local cache writes can replace it. Signing out clears the active cloud records from the page.
+- **Export** downloads the current launch list as JSON. Keep exports as an additional backup; local browser storage is also retained after migration.
+- If Supabase variables are absent, the app shows local-only mode and does not attempt cloud authentication.
 
 ## Getting started
 
@@ -124,7 +169,7 @@ Metric mode displays:
 - Pressure: hectopascals
 - Temperature: Celsius
 
-The selected display preference is saved locally in the browser.
+The selected display preference is saved locally in the browser. After sign-in, the account preference is also saved to Supabase and shared across devices.
 
 ## Prediction models
 
@@ -170,14 +215,15 @@ type Launch = {
 
 `rocketMass` is the complete loaded rocket mass in grams, including the motor. Temperatures are stored canonically in Fahrenheit regardless of the selected display unit.
 
-## Local storage
+## Local storage and migration
 
-The prototype uses these browser storage keys:
+The app uses these browser storage keys as a fallback/cache and migration source:
 
 - `apogee-launches-v1` — saved launch records
 - `apogee-prefs-v1` — selected display units
+- `apogee-migrated-<user-id>` — per-account marker written only after local records are imported successfully
 
-Data is device- and browser-specific in the current prototype. Clearing browser site data removes the locally saved records. Use the in-app **Export** action to save a JSON copy before clearing storage or changing browsers.
+In cloud mode, clearing browser site data does not remove records already transferred to Supabase. In local-only mode, clearing site data removes the local records. Use the in-app **Export** action to save a JSON copy before clearing storage or changing browsers.
 
 ## Project structure
 
