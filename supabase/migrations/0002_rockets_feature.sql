@@ -17,10 +17,7 @@ create table if not exists public.rocket_preferences (
 );
 
 -- Add rocket_id to launches table
-alter table public.launches add column rocket_id uuid;
-
--- We'll populate rocket_id after setting up the default rockets for existing users
--- For now, make it nullable to avoid breaking existing data
+alter table public.launches add column if not exists rocket_id uuid;
 
 -- Create triggers for updated_at
 drop trigger if exists rockets_set_updated_at on public.rockets;
@@ -100,5 +97,34 @@ begin
   exception when duplicate_object then
     null;
   end;
+end;
+$$;
+
+-- DATA MIGRATION: Create default rockets for existing users and assign launches
+do $$
+declare
+  v_user_id uuid;
+  v_rocket_id uuid;
+begin
+  -- For each user that has launches but no rockets, create a default rocket
+  for v_user_id in
+    select distinct user_id from public.launches
+    where rocket_id is null
+    and user_id not in (select distinct user_id from public.rockets)
+  loop
+    -- Create default rocket for this user
+    insert into public.rockets (user_id, name, description, created_at, updated_at)
+    values (v_user_id, 'Default Rocket', 'Migrated flights', timezone('utc', now()), timezone('utc', now()))
+    returning id into v_rocket_id;
+
+    -- Create rocket preferences with default target altitude
+    insert into public.rocket_preferences (rocket_id, target_altitude, updated_at)
+    values (v_rocket_id, 800, timezone('utc', now()));
+
+    -- Assign all launches from this user to the default rocket
+    update public.launches
+    set rocket_id = v_rocket_id
+    where user_id = v_user_id and rocket_id is null;
+  end loop;
 end;
 $$;
