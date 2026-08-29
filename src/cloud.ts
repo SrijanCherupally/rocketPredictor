@@ -132,24 +132,49 @@ export async function savePreferences(client: Client, userId: string, preference
 }
 
 export async function fetchRockets(client: Client, userId: string) {
-  const { data, error } = await client.from('rockets').select('*').eq('user_id', userId).order('created_at', { ascending: true })
-  if (error) throw error
-  return (data ?? []).map((row: RocketRow): Rocket => ({
-    id: row.id,
-    name: row.name,
-    description: row.description,
-    createdAt: row.created_at,
-  }))
+  try {
+    const { data, error } = await client.from('rockets').select('*').eq('user_id', userId).order('created_at', { ascending: true })
+    if (error) {
+      // If schema cache error, return empty array (new user)
+      if (error.message?.includes('schema cache')) {
+        return []
+      }
+      throw error
+    }
+    return (data ?? []).map((row: RocketRow): Rocket => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      createdAt: row.created_at,
+    }))
+  } catch (err) {
+    // If schema cache error, return empty array and let onboarding handle it
+    if (err instanceof Error && err.message?.includes('schema cache')) {
+      console.warn('Schema cache error, treating as new user')
+      return []
+    }
+    throw err
+  }
 }
 
 export async function createRocket(client: Client, userId: string, name: string, description?: string) {
-  const { data, error } = await client.from('rockets').insert({ user_id: userId, name, description: description ?? null }).select('*').single()
-  if (error) throw error
-  const rocket = data as RocketRow
-  // Also create rocket preferences with default target altitude
-  const { error: prefError } = await client.from('rocket_preferences').insert({ rocket_id: rocket.id, target_altitude: 800 })
-  if (prefError) throw prefError
-  return { id: rocket.id, name: rocket.name, description: rocket.description, createdAt: rocket.created_at }
+  try {
+    const { data, error } = await client.from('rockets').insert({ user_id: userId, name, description: description ?? null }).select('*').single()
+    if (error) throw error
+    const rocket = data as RocketRow
+    // Also create rocket preferences with default target altitude
+    const { error: prefError } = await client.from('rocket_preferences').insert({ rocket_id: rocket.id, target_altitude: 800 })
+    if (prefError) throw prefError
+    return { id: rocket.id, name: rocket.name, description: rocket.description, createdAt: rocket.created_at }
+  } catch (err) {
+    if (err instanceof Error && err.message?.includes('schema cache')) {
+      console.warn('Schema cache error creating rocket, retrying...')
+      // Retry once after a short delay
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      return createRocket(client, userId, name, description)
+    }
+    throw err
+  }
 }
 
 export async function updateRocket(client: Client, userId: string, rocketId: string, name: string, description?: string) {
