@@ -163,6 +163,7 @@ function App() {
           if (active) {
             setRockets([newRocket])
             setActiveRocketId(newRocket.id)
+            setPreferencesReady(true)
           }
         }).catch(err => {
           if (active) setCloudError(err.message)
@@ -171,9 +172,15 @@ function App() {
         // User has rockets
         setRockets(userRockets)
         setActiveRocketId(userRockets[0].id)
+        setPreferencesReady(true)
       }
     }).catch((error: Error) => {
-      if (active) { setCloudError(error.message); setCloudLoading(false) }
+      if (active) {
+        setCloudError(error.message)
+        setCloudLoading(false)
+        // Still set preferences ready so UI doesn't hang
+        setPreferencesReady(true)
+      }
     })
   }, [session])
 
@@ -198,7 +205,7 @@ function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'launches', filter: `user_id=eq.${session.user.id}` }, (payload) => {
         const row = payload.new as CloudLaunchRow
         const oldRow = payload.old as Partial<CloudLaunchRow>
-        if (row.rocket_id !== activeRocketId) return // Ignore launches from other rockets
+        if (row?.rocket_id !== activeRocketId) return // Ignore launches from other rockets
         if (payload.eventType === 'DELETE') {
           setLaunches((current) => current.filter((launch) => launch.id !== oldRow.launch_id))
           setVersions((current) => { const next = { ...current }; delete next[oldRow.launch_id ?? '']; return next })
