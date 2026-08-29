@@ -57,7 +57,10 @@ const mphToKmh = (value: number) => value * 1.60934
 function App() {
   const { theme, setTheme } = useTheme()
   const [launches, setLaunches] = useState<Launch[]>(() => {
-    try { return normalizeLaunches(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')) } catch { return seedLaunches }
+    try {
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')
+      return Array.isArray(stored) && stored.length > 0 ? normalizeLaunches(stored) : []
+    } catch { return [] }
   })
   const [units, setUnits] = useState<Units>(() => {
     try { return (localStorage.getItem(PREF_KEY) as Units) ?? 'imperial' } catch { return 'imperial' }
@@ -113,6 +116,10 @@ function App() {
       if (error) setCloudError(error.message)
       setSession(data.session)
       setAuthReady(true)
+      // If not signed in and no local launches, show seed launches for preview
+      if (!data.session && launches.length === 0) {
+        setLaunches(seedLaunches)
+      }
     })
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       if (mounted) setSession(nextSession)
