@@ -422,14 +422,14 @@ function App() {
       <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}>
         <div className="brand"><div className="brand-mark"><RocketIcon size={20} /></div><div><strong>apexFlite</strong><span>flight intelligence</span></div></div>
         <div className="workspace-switcher" onClick={() => setRocketDropdownOpen(!rocketDropdownOpen)}><div className="workspace-icon">{activeRocket?.name.charAt(0).toUpperCase() ?? '🚀'}</div><div><b>{activeRocket?.name ?? 'Select Rocket'}</b><span>{rockets.length} rocket{rockets.length !== 1 ? 's' : ''}</span></div><ChevronDown size={16} style={{ transform: rocketDropdownOpen ? 'rotate(180deg)' : '' }} /></div>
-        {rocketDropdownOpen && <div style={{ marginTop: '8px', maxHeight: '300px', overflowY: 'auto', background: 'var(--color-sidebar-hover)', borderRadius: '7px' }}>
+        {rocketDropdownOpen && <div className="rocket-dropdown">
           {rockets.map(rocket => (
-            <button key={rocket.id} style={{ width: '100%', padding: '10px 12px', border: 'none', background: rocket.id === activeRocketId ? 'var(--color-sidebar-active)' : 'transparent', color: rocket.id === activeRocketId ? '#fff' : 'var(--color-sidebar-text-muted)', cursor: 'pointer', textAlign: 'left', fontSize: '13px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }} onClick={() => { setActiveRocketId(rocket.id); setRocketDropdownOpen(false) }}>
+            <button key={rocket.id} className={rocket.id === activeRocketId ? 'active' : ''} onClick={() => { setActiveRocketId(rocket.id); setRocketDropdownOpen(false) }}>
               <span>{rocket.name}</span>
-              <span style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>{launches.length} flights</span>
+              <span className="rocket-flight-count">{launches.length} flights</span>
             </button>
           ))}
-          <button style={{ width: '100%', padding: '10px 12px', border: 'none', background: 'transparent', color: 'var(--color-accent-primary)', cursor: 'pointer', textAlign: 'left', fontSize: '13px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={() => { setShowNewRocketModal(true); setRocketDropdownOpen(false) }}>
+          <button className="rocket-new-button" onClick={() => { setShowNewRocketModal(true); setRocketDropdownOpen(false) }}>
             <Plus size={14} /> New Rocket
           </button>
         </div>}
