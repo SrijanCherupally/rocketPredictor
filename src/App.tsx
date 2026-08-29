@@ -311,7 +311,9 @@ function App() {
       setShowOnboardingWizard(false)
       setToast(`Created "${newRocket.name}"`)
     } catch (error) {
-      setToast(`Failed to create rocket: ${error instanceof Error ? error.message : 'try again'}`)
+      const errorMsg = error instanceof Error ? error.message : 'try again'
+      console.error('Failed to create rocket:', error)
+      setToast(`Failed to create rocket: ${errorMsg}`)
     }
   }
 
