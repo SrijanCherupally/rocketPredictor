@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { ArrowDownToLine, ArrowUpRight, BarChart3, Bell, Check, ChevronDown, CloudSun, Database, Download, Gauge, LogOut, Menu, Moon, Pencil, Plus, Rocket, Settings2, Sparkles, Sun, Target, Trash2, Wind, X, Activity } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpRight, BarChart3, Bell, Check, ChevronDown, CloudSun, Database, Download, Gauge, LogOut, Menu, Moon, Pencil, Plus, Rocket as RocketIcon, Settings2, Sparkles, Sun, Target, Trash2, Wind, X, Activity } from 'lucide-react'
 import { useTheme } from './useTheme'
 import { Area, Brush, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Scatter, Tooltip, XAxis, YAxis } from 'recharts'
 import { adjustedAltitude, adjustedRegression, linearRegression, median, totalMass, type Launch } from './analytics'
-import { CloudConflictError, createLaunch, deleteLaunch, fetchWorkspace, importLaunches, savePreferences, updateLaunch, type CloudLaunchRow } from './cloud'
+import { CloudConflictError, createLaunch, deleteLaunch, fetchRockets, createRocket, updateRocket, deleteRocket, fetchRocketData, saveRocketPreferences, createLaunchForRocket, updateLaunchForRocket, deleteLaunchForRocket, importLaunches, savePreferences, type Rocket, type CloudLaunchRow } from './cloud'
 import { isCloudConfigured, supabase } from './supabase'
 import { seedLaunches } from './seed'
 
@@ -89,6 +89,18 @@ function App() {
   const [resendEmail, setResendEmail] = useState('')
   const [migrationDismissed, setMigrationDismissed] = useState(false)
 
+  // Rockets feature state
+  const [rockets, setRockets] = useState<Rocket[]>([])
+  const [activeRocketId, setActiveRocketId] = useState<string | null>(null)
+  const [rocketDropdownOpen, setRocketDropdownOpen] = useState(false)
+  const [showNewRocketModal, setShowNewRocketModal] = useState(false)
+  const [showEditRocketModal, setShowEditRocketModal] = useState(false)
+  const [editingRocketId, setEditingRocketId] = useState<string | null>(null)
+  const [newRocketName, setNewRocketName] = useState('')
+  const [newRocketDescription, setNewRocketDescription] = useState('')
+  const [showOnboardingWizard, setShowOnboardingWizard] = useState(false)
+  const [rocketTargetAltitude, setRocketTargetAltitude] = useState(800)
+
   const authRedirectUrl = () => {
     const configured = import.meta.env.VITE_AUTH_REDIRECT_URL ?? import.meta.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL
     if (configured) return configured
@@ -130,35 +142,62 @@ function App() {
   useEffect(() => {
     if (!session || !supabase) return
     let active = true
-    fetchWorkspace(supabase, session.user.id).then((workspace) => {
+
+    // Fetch rockets and handle onboarding/migration
+    Promise.all([
+      fetchRockets(supabase, session.user.id),
+      supabase.from('launches').select('rocket_id').eq('user_id', session.user.id).limit(1).maybeSingle()
+    ]).then(([userRockets, existingLaunchRow]) => {
       if (!active) return
-      setCloudLoading(false)
-      setCloudError('')
-      setLaunches(workspace.launches)
-      setVersions(workspace.versions)
-      if (workspace.preferences) {
-        setUnits(workspace.preferences.units)
-        setTargetAltitude(workspace.preferences.targetAltitude)
+
+      if (userRockets.length === 0 && !existingLaunchRow.data) {
+        // New user - show onboarding wizard
+        setShowOnboardingWizard(true)
+        setRockets([])
+        setActiveRocketId(null)
+        setPreferencesReady(true)
+      } else if (userRockets.length === 0 && existingLaunchRow.data) {
+        // User has launches but no rockets - create default rocket
+        createRocket(supabase, session.user.id, 'Default Rocket', 'Migrated flights').then(newRocket => {
+          if (active) {
+            setRockets([newRocket])
+            setActiveRocketId(newRocket.id)
+          }
+        }).catch(err => {
+          if (active) setCloudError(err.message)
+        })
+      } else {
+        // User has rockets
+        setRockets(userRockets)
+        setActiveRocketId(userRockets[0].id)
       }
-      setPreferencesReady(true)
-      let local: Launch[] = []
-      try {
-        const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')
-        local = Array.isArray(raw) ? normalizeLaunches(raw) : []
-      } catch { /* ignore malformed local storage */ }
-      const existingIds = new Set(workspace.launches.map((launch) => launch.id))
-      const candidates = local.filter((launch) => !existingIds.has(launch.id))
-      const marker = `apexFlite-migrated-${session.user.id}`
-      let alreadyMigrated = false
-      try { alreadyMigrated = localStorage.getItem(marker) === 'true' } catch { /* storage may be unavailable */ }
-      if (!alreadyMigrated && candidates.length > 0) setPendingImport(candidates)
     }).catch((error: Error) => {
       if (active) { setCloudError(error.message); setCloudLoading(false) }
     })
-    const channel = supabase.channel(`workspace-${session.user.id}`)
+  }, [session])
+
+  // Load rocket data when active rocket changes
+  useEffect(() => {
+    if (!activeRocketId || !session || !supabase) return
+    setCloudLoading(true)
+    fetchRocketData(supabase, session.user.id, activeRocketId).then((data) => {
+      if (setCloudLoading) {
+        setLaunches(data.launches)
+        setVersions(data.versions)
+        setRocketTargetAltitude(data.targetAltitude)
+        setCloudLoading(false)
+      }
+    }).catch((error: Error) => {
+      setCloudError(error.message)
+      setCloudLoading(false)
+    })
+
+    // Subscribe to realtime updates for this rocket
+    const channel = supabase.channel(`rocket-${activeRocketId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'launches', filter: `user_id=eq.${session.user.id}` }, (payload) => {
         const row = payload.new as CloudLaunchRow
         const oldRow = payload.old as Partial<CloudLaunchRow>
+        if (row.rocket_id !== activeRocketId) return // Ignore launches from other rockets
         if (payload.eventType === 'DELETE') {
           setLaunches((current) => current.filter((launch) => launch.id !== oldRow.launch_id))
           setVersions((current) => { const next = { ...current }; delete next[oldRow.launch_id ?? '']; return next })
@@ -167,28 +206,31 @@ function App() {
           setVersions((current) => ({ ...current, [row.launch_id]: row.version }))
         }
       }).subscribe()
-    return () => { active = false; if (supabase) void supabase.removeChannel(channel) }
-  }, [session])
+
+    return () => { if (supabase) void supabase.removeChannel(channel) }
+  }, [activeRocketId, session])
+
 
   const rawModel = useMemo(() => linearRegression(launches.map((launch) => ({ x: totalMass(launch), y: launch.altitude }))), [launches])
   const adjustedModel = useMemo(() => adjustedRegression(launches), [launches])
   const reference = useMemo(() => ({ wind: median(launches.map((launch) => launch.windSpeed)), pressure: median(launches.map((launch) => launch.airPressure)), humidity: median(launches.map((launch) => launch.humidity)) }), [launches])
-  const rawRecommendation = rawModel && Math.abs(rawModel.coefficients[0]) > 0.01 ? (targetAltitude - rawModel.intercept) / rawModel.coefficients[0] : null
-  const adjustedRecommendation = adjustedModel && Math.abs(adjustedModel.coefficients[0]) > 0.01 ? (targetAltitude - adjustedModel.intercept - adjustedModel.coefficients[1] * reference.wind - adjustedModel.coefficients[2] * reference.pressure - adjustedModel.coefficients[3] * reference.humidity) / adjustedModel.coefficients[0] : null
+  const rawRecommendation = rawModel && Math.abs(rawModel.coefficients[0]) > 0.01 ? (rocketTargetAltitude - rawModel.intercept) / rawModel.coefficients[0] : null
+  const adjustedRecommendation = adjustedModel && Math.abs(adjustedModel.coefficients[0]) > 0.01 ? (rocketTargetAltitude - adjustedModel.intercept - adjustedModel.coefficients[1] * reference.wind - adjustedModel.coefficients[2] * reference.pressure - adjustedModel.coefficients[3] * reference.humidity) / adjustedModel.coefficients[0] : null
   const rawChart = useMemo(() => launches.map((launch) => ({ ...launch, mass: totalMass(launch), fitted: rawModel ? rawModel.intercept + rawModel.coefficients[0] * totalMass(launch) : 0 })).sort((a, b) => a.mass - b.mass), [launches, rawModel])
   const adjustedChart = useMemo(() => launches.map((launch) => ({ ...launch, mass: totalMass(launch), adjusted: adjustedModel ? adjustedAltitude(launch, adjustedModel, reference) : launch.altitude, fitted: adjustedModel ? adjustedModel.intercept + adjustedModel.coefficients[0] * totalMass(launch) + adjustedModel.coefficients[1] * reference.wind + adjustedModel.coefficients[2] * reference.pressure + adjustedModel.coefficients[3] * reference.humidity : 0 })).sort((a, b) => a.mass - b.mass), [launches, adjustedModel, reference])
   const avgAltitude = launches.length ? launches.reduce((sum, launch) => sum + launch.altitude, 0) / launches.length : 0
   const avgDescent = launches.length ? launches.reduce((sum, launch) => sum + launch.descentTime, 0) / launches.length : 0
-  const targetGap = avgAltitude - targetAltitude
+  const targetGap = avgAltitude - rocketTargetAltitude
   const closeModal = () => { setForm(emptyForm); setRocketMassInput(String(emptyForm.rocketMass)); setEditingLaunchId(null); setShowForm(false) }
+
   const onSaveLaunch = async (event: React.FormEvent) => {
     event.preventDefault()
     const launch: Launch = { ...form, id: editingLaunchId ?? `flight-${Date.now()}` }
-    if (session && supabase) {
+    if (session && supabase && activeRocketId) {
       try {
         const row = editingLaunchId
-          ? await updateLaunch(supabase, session.user.id, launch, versions[launch.id] ?? 1)
-          : await createLaunch(supabase, session.user.id, launch)
+          ? await updateLaunchForRocket(supabase, session.user.id, launch, activeRocketId, versions[launch.id] ?? 1)
+          : await createLaunchForRocket(supabase, session.user.id, launch, activeRocketId)
         setLaunches((current) => editingLaunchId ? current.map((item) => item.id === launch.id ? launch : item) : [...current, launch])
         setVersions((current) => ({ ...current, [launch.id]: row.version }))
         setToast(editingLaunchId ? 'Flight updated · synced online' : 'Flight saved · synced online')
@@ -202,23 +244,26 @@ function App() {
     setToast(editingLaunchId ? 'Flight updated locally' : 'Flight saved locally')
     closeModal()
   }
+
   const editLaunch = (launch: Launch) => {
     setForm({ ...launch })
     setRocketMassInput(String(launch.rocketMass))
     setEditingLaunchId(launch.id)
     setShowForm(true)
   }
+
   const openNewLaunch = () => {
     setForm(emptyForm)
     setRocketMassInput(String(emptyForm.rocketMass))
     setEditingLaunchId(null)
     setShowForm(true)
   }
+
   const removeLaunch = async (id: string) => {
-    if (!window.confirm('Remove this flight from the workspace?')) return
-    if (session && supabase) {
+    if (!window.confirm('Remove this flight from the rocket?')) return
+    if (session && supabase && activeRocketId) {
       try {
-        await deleteLaunch(supabase, session.user.id, id, versions[id] ?? 1)
+        await deleteLaunchForRocket(supabase, session.user.id, id, activeRocketId, versions[id] ?? 1)
         setLaunches((current) => current.filter((launch) => launch.id !== id))
         setVersions((current) => { const next = { ...current }; delete next[id]; return next })
         setToast('Flight removed · synced online')
@@ -230,6 +275,7 @@ function App() {
     setLaunches((current) => current.filter((launch) => launch.id !== id))
     setToast('Flight removed locally')
   }
+
   const updateForm = (field: keyof FormValues, value: string) => setForm((current) => ({ ...current, [field]: value === '' ? 0 : Number(value) }))
   const displayMass = (grams: number) => `${formatMass(grams)} g`
   const displayAltitude = (feet: number) => units === 'imperial' ? `${formatNumber(feet)} ft` : `${formatNumber(ftToM(feet))} m`
@@ -237,12 +283,65 @@ function App() {
   const displayTemperature = (fahrenheit: number) => formatTemperature(fahrenheit, units)
   const changeUnits = (next: Units) => {
     setUnits(next)
-    if (session && supabase && preferencesReady) void savePreferences(supabase, session.user.id, { units: next, targetAltitude }).catch((error: Error) => setToast(`Preference sync failed · ${error.message}`))
+    if (session && supabase && preferencesReady) void savePreferences(supabase, session.user.id, { units: next, targetAltitude: rocketTargetAltitude }).catch((error: Error) => setToast(`Preference sync failed · ${error.message}`))
   }
   const changeTargetAltitude = (next: number) => {
-    setTargetAltitude(next)
-    if (session && supabase && preferencesReady) void savePreferences(supabase, session.user.id, { units, targetAltitude: next }).catch((error: Error) => setToast(`Preference sync failed · ${error.message}`))
+    setRocketTargetAltitude(next)
+    if (session && supabase && activeRocketId && preferencesReady) void saveRocketPreferences(supabase, activeRocketId, next).catch((error: Error) => setToast(`Preference sync failed · ${error.message}`))
   }
+
+  // Rocket management functions
+  const handleCreateRocket = async () => {
+    if (!newRocketName.trim() || !session || !supabase) return
+    try {
+      const newRocket = await createRocket(supabase, session.user.id, newRocketName.trim(), newRocketDescription.trim() || undefined)
+      setRockets(prev => [...prev, newRocket])
+      setActiveRocketId(newRocket.id)
+      setNewRocketName('')
+      setNewRocketDescription('')
+      setShowNewRocketModal(false)
+      setShowOnboardingWizard(false)
+      setToast(`Created "${newRocket.name}"`)
+    } catch (error) {
+      setToast(`Failed to create rocket: ${error instanceof Error ? error.message : 'try again'}`)
+    }
+  }
+
+  const handleUpdateRocket = async () => {
+    if (!editingRocketId || !newRocketName.trim() || !session || !supabase) return
+    try {
+      await updateRocket(supabase, session.user.id, editingRocketId, newRocketName.trim(), newRocketDescription.trim() || undefined)
+      setRockets(prev => prev.map(r => r.id === editingRocketId ? { ...r, name: newRocketName.trim(), description: newRocketDescription.trim() || null } : r))
+      setNewRocketName('')
+      setNewRocketDescription('')
+      setEditingRocketId(null)
+      setShowEditRocketModal(false)
+      setToast('Rocket updated')
+    } catch (error) {
+      setToast(`Failed to update rocket: ${error instanceof Error ? error.message : 'try again'}`)
+    }
+  }
+
+  const handleDeleteRocket = async () => {
+    if (!editingRocketId || !session || !supabase) return
+    if (!window.confirm('Delete this rocket and all its flights?')) return
+    try {
+      await deleteRocket(supabase, session.user.id, editingRocketId)
+      setRockets(prev => prev.filter(r => r.id !== editingRocketId))
+      if (activeRocketId === editingRocketId) {
+        const remaining = rockets.filter(r => r.id !== editingRocketId)
+        setActiveRocketId(remaining.length > 0 ? remaining[0].id : null)
+      }
+      setEditingRocketId(null)
+      setShowEditRocketModal(false)
+      setToast('Rocket deleted')
+    } catch (error) {
+      setToast(`Failed to delete rocket: ${error instanceof Error ? error.message : 'try again'}`)
+    }
+  }
+
+  const activeRocket = rockets.find(r => r.id === activeRocketId)
+
 
   const exportData = () => {
     const blob = new Blob([JSON.stringify(launches, null, 2)], { type: 'application/json' })
@@ -299,22 +398,40 @@ function App() {
     if (!session || !supabase || !pendingImport) return
     try {
       await importLaunches(supabase, session.user.id, pendingImport)
-      const workspace = await fetchWorkspace(supabase, session.user.id)
-      setLaunches(workspace.launches); setVersions(workspace.versions)
+      // After import, reload the current rocket's data
+      if (activeRocketId) {
+        const data = await fetchRocketData(supabase, session.user.id, activeRocketId)
+        setLaunches(data.launches)
+        setVersions(data.versions)
+      }
       localStorage.setItem(`apexFlite-migrated-${session.user.id}`, 'true')
-      setPendingImport(null); setToast(`${pendingImport.length} local flights transferred to the cloud`)
-    } catch (error) { setToast(`Transfer failed · ${error instanceof Error ? error.message : 'try again'}`) }
+      setPendingImport(null)
+      setToast(`${pendingImport.length} local flights transferred to the cloud`)
+    } catch (error) {
+      setToast(`Transfer failed · ${error instanceof Error ? error.message : 'try again'}`)
+    }
   }
 
-  if (!authReady) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><strong>apexFlite</strong></div><h1>Connecting to your workspace…</h1><p>Restoring your secure cloud session.</p><div className="loading-line" /></div></div>
+  if (!authReady) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><RocketIcon size={20} /></div><strong>apexFlite</strong></div><h1>Connecting to your workspace…</h1><p>Restoring your secure cloud session.</p><div className="loading-line" /></div></div>
   if (isCloudConfigured && !session) return <AuthScreen mode={authMode} setMode={(mode) => { setAuthMode(mode); setAuthMessage(''); setCloudError(''); setResendEmail('') }} email={authEmail} setEmail={setAuthEmail} password={authPassword} setPassword={setAuthPassword} busy={authBusy} message={authMessage} error={cloudError} onSubmit={submitAuth} resendEmail={resendEmail} resendBusy={resendBusy} onResend={resendVerification} />
   const syncStatus = cloudLoading ? 'Syncing…' : session ? 'Synced online' : 'Local preview mode'
 
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}>
-        <div className="brand"><div className="brand-mark"><Rocket size={20} /></div><div><strong>apexFlite</strong><span>flight intelligence</span></div></div>
-        <div className="workspace-switcher"><div className="workspace-icon">T</div><div><b>TARC Rocketry</b><span>{session ? 'Cloud workspace' : 'Local preview'}</span></div><ChevronDown size={16} /></div>
+        <div className="brand"><div className="brand-mark"><RocketIcon size={20} /></div><div><strong>apexFlite</strong><span>flight intelligence</span></div></div>
+        <div className="workspace-switcher" onClick={() => setRocketDropdownOpen(!rocketDropdownOpen)}><div className="workspace-icon">{activeRocket?.name.charAt(0).toUpperCase() ?? '🚀'}</div><div><b>{activeRocket?.name ?? 'Select Rocket'}</b><span>{rockets.length} rocket{rockets.length !== 1 ? 's' : ''}</span></div><ChevronDown size={16} style={{ transform: rocketDropdownOpen ? 'rotate(180deg)' : '' }} /></div>
+        {rocketDropdownOpen && <div style={{ marginTop: '8px', maxHeight: '300px', overflowY: 'auto', background: 'var(--color-sidebar-hover)', borderRadius: '7px' }}>
+          {rockets.map(rocket => (
+            <button key={rocket.id} style={{ width: '100%', padding: '10px 12px', border: 'none', background: rocket.id === activeRocketId ? 'var(--color-sidebar-active)' : 'transparent', color: rocket.id === activeRocketId ? '#fff' : 'var(--color-sidebar-text-muted)', cursor: 'pointer', textAlign: 'left', fontSize: '13px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }} onClick={() => { setActiveRocketId(rocket.id); setRocketDropdownOpen(false) }}>
+              <span>{rocket.name}</span>
+              <span style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>{launches.length} flights</span>
+            </button>
+          ))}
+          <button style={{ width: '100%', padding: '10px 12px', border: 'none', background: 'transparent', color: 'var(--color-accent-primary)', cursor: 'pointer', textAlign: 'left', fontSize: '13px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={() => { setShowNewRocketModal(true); setRocketDropdownOpen(false) }}>
+            <Plus size={14} /> New Rocket
+          </button>
+        </div>}
         <nav><button className={activeSection === 'overview' ? 'active' : ''} onClick={() => { setActiveSection('overview'); setMobileNav(false) }}><BarChart3 size={18} /> Overview</button><button className={activeSection === 'flights' ? 'active' : ''} onClick={() => { setActiveSection('flights'); setMobileNav(false) }}><Database size={18} /> Flights <em>{launches.length}</em></button><button onClick={() => setToast('Team insights are coming soon')}><Sparkles size={18} /> Insights <span className="new-pill">NEW</span></button></nav>
         <div className="sidebar-bottom"><button className={activeSection === 'settings' ? 'active' : ''} onClick={() => { setActiveSection('settings'); setMobileNav(false) }}><Settings2 size={18} /> Settings</button><div className="profile"><div className="avatar">{session ? (session.user.email?.slice(0, 2).toUpperCase() ?? 'RT') : 'LP'}</div><div><b>{session?.user.email ?? 'Local preview'}</b><span>{session ? 'Synced team access' : 'Cloud not configured'}</span></div>{session ? <button className="profile-menu" onClick={signOut} aria-label="Sign out"><LogOut size={14} /></button> : <MoreDots />}</div></div>
       </aside>
@@ -323,15 +440,18 @@ function App() {
         <header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="Open navigation"><Menu size={20} /></button><div className="breadcrumbs"><span>Workspace</span><span>/</span><b>{activeSection === 'overview' ? 'Overview' : activeSection === 'flights' ? 'Flights' : 'Settings'}</b></div><div className="top-actions"><button className="unit-select" onClick={() => changeUnits(units === 'imperial' ? 'metric' : 'imperial')}><span className="unit-dot" /> {units === 'imperial' ? 'Imperial' : 'Metric'} <ChevronDown size={14} /></button><button className="icon-button" onClick={() => setToast(syncStatus)} aria-label="Sync status"><Bell size={16} /></button>{session ? <button className="avatar small" onClick={signOut} aria-label="Sign out">{session.user.email?.slice(0, 2).toUpperCase() ?? 'RT'}</button> : <span className="local-badge">LOCAL</span>}</div></header>
         {cloudError && <div className="cloud-error"><span>{cloudError}</span><button onClick={() => setCloudError('')} aria-label="Dismiss cloud error"><X size={15} /></button></div>}
         {session && <div className={`sync-banner ${cloudLoading ? 'syncing' : ''}`}><span className="sync-dot" /> {syncStatus}<span>{session.user.email}</span></div>}
-        {activeSection === 'settings' ? <SettingsPanel units={units} setUnits={changeUnits} targetAltitude={targetAltitude} setTargetAltitude={changeTargetAltitude} theme={theme} setTheme={setTheme} /> : activeSection === 'flights' ? <FlightsPanel launches={launches} displayAltitude={displayAltitude} displayMass={displayMass} displayWind={displayWind} displayTemperature={displayTemperature} exportData={exportData} onDelete={removeLaunch} onEdit={editLaunch} onNew={openNewLaunch} /> : <>
+        {activeSection === 'settings' ? <SettingsPanel units={units} setUnits={changeUnits} targetAltitude={rocketTargetAltitude} setTargetAltitude={changeTargetAltitude} theme={theme} setTheme={setTheme} activeRocket={activeRocket} onEditRocket={() => { if (activeRocketId) { setEditingRocketId(activeRocketId); setNewRocketName(activeRocket?.name ?? ''); setNewRocketDescription(activeRocket?.description ?? ''); setShowEditRocketModal(true) } }} /> : activeSection === 'flights' ? <FlightsPanel launches={launches} displayAltitude={displayAltitude} displayMass={displayMass} displayWind={displayWind} displayTemperature={displayTemperature} exportData={exportData} onDelete={removeLaunch} onEdit={editLaunch} onNew={openNewLaunch} /> : <>
         <section className="page-heading"><div><p className="eyebrow">THURSDAY, AUGUST 27, 2026 <span className="live-dot" /> LIVE MODEL</p><h1>Good morning, team.</h1><p className="subtitle">Your flight data is getting smarter with every launch.</p></div><button className="primary-button" onClick={openNewLaunch}><Plus size={17} /> Log a flight</button></section>
-        <section className="target-banner"><div className="target-icon"><Target size={20} /></div><div><span>Current target altitude</span><strong>{formatNumber(targetAltitude)} <small>ft</small></strong></div><div className="target-divider" /><div className="target-status"><Check size={15} /> <span>{Math.abs(targetGap) < 15 ? 'On target range' : targetGap > 0 ? 'Running high' : 'Running low'}</span></div><button onClick={() => setActiveSection('settings')}>Edit target <ArrowUpRight size={15} /></button></section>
+        <section className="target-banner"><div className="target-icon"><Target size={20} /></div><div><span>Current target altitude</span><strong>{formatNumber(rocketTargetAltitude)} <small>ft</small></strong></div><div className="target-divider" /><div className="target-status"><Check size={15} /> <span>{Math.abs(targetGap) < 15 ? 'On target range' : targetGap > 0 ? 'Running high' : 'Running low'}</span></div><button onClick={() => setActiveSection('settings')}>Edit target <ArrowUpRight size={15} /></button></section>
         <section className="stats-grid"><StatCard label="FLIGHTS LOGGED" value={String(launches.length).padStart(2, '0')} note="+2 this month" trend="up" icon={<Database size={18} />} /><StatCard label="AVG. ALTITUDE" value={formatNumber(avgAltitude)} unit="ft" note={`${targetGap >= 0 ? '+' : ''}${formatNumber(targetGap)} ft vs target`} trend={targetGap >= 0 ? 'up' : 'down'} icon={<ArrowUpRight size={18} />} /><StatCard label="AVG. DESCENT" value={formatNumber(avgDescent, 1)} unit="sec" note="Target: 34.0 sec" trend={Math.abs(avgDescent - 34) < 2 ? 'up' : 'down'} icon={<ArrowDownToLine size={18} />} /><StatCard label="MODEL CONFIDENCE" value={adjustedModel ? formatNumber(adjustedModel.r2 * 100) : '—'} unit={adjustedModel ? '%' : ''} note={adjustedModel ? 'Weather model active' : 'Need 7+ flights'} trend="up" icon={<Gauge size={18} />} /></section>
         <section className="analysis-grid"><AnalysisCard title="Raw altitude model" subtitle="Altitude vs. total mass · no weather compensation" icon={<Activity size={18} />} accent="blue" model={rawModel} recommendation={rawRecommendation} chart={<RawChart data={rawChart} target={targetAltitude} units={units} />} /><AnalysisCard title="Adjusted altitude model" subtitle="Compensated for wind, pressure & humidity" icon={<CloudSun size={18} />} accent="purple" model={adjustedModel} recommendation={adjustedRecommendation} chart={<AdjustedChart data={adjustedChart} target={targetAltitude} units={units} />} /></section>
         <section className="recent-section"><div className="section-heading"><div><h2>Recent flights</h2><p>Latest performance from your team</p></div><button className="text-button" onClick={() => setActiveSection('flights')}>View all <ArrowUpRight size={15} /></button></div><FlightTable launches={launches.slice(-5).reverse()} displayAltitude={displayAltitude} displayMass={displayMass} displayWind={displayWind} displayTemperature={displayTemperature} onDelete={removeLaunch} onEdit={editLaunch} /></section>
         </>}
       </main>
       {showForm && <LaunchModal form={form} setForm={setForm} onClose={() => { setShowForm(false); setEditingLaunchId(null) }} onSubmit={onSaveLaunch} units={units} updateForm={updateForm} editing={Boolean(editingLaunchId)} rocketMassInput={rocketMassInput} setRocketMassInput={setRocketMassInput} />}
+      {showNewRocketModal && <NewRocketModal name={newRocketName} setName={setNewRocketName} description={newRocketDescription} setDescription={setNewRocketDescription} onCreate={handleCreateRocket} onClose={() => { setShowNewRocketModal(false); setNewRocketName(''); setNewRocketDescription('') }} />}
+      {showEditRocketModal && <EditRocketModal name={newRocketName} setName={setNewRocketName} description={newRocketDescription} setDescription={setNewRocketDescription} onUpdate={handleUpdateRocket} onDelete={handleDeleteRocket} onClose={() => { setShowEditRocketModal(false); setEditingRocketId(null); setNewRocketName(''); setNewRocketDescription('') }} />}
+      {showOnboardingWizard && <OnboardingWizard name={newRocketName} setName={setNewRocketName} description={newRocketDescription} setDescription={setNewRocketDescription} onCreate={handleCreateRocket} onSkip={() => setShowOnboardingWizard(false)} />}
       {pendingImport && !migrationDismissed && <MigrationDialog count={pendingImport.length} busy={cloudLoading} onImport={async () => { setCloudLoading(true); await importLocalData(); setCloudLoading(false) }} onDismiss={() => setMigrationDismissed(true)} />}
       {toast && <div className="toast"><Check size={16} /> {toast}</div>}
     </div>
@@ -366,8 +486,32 @@ function FlightTable({ launches, displayAltitude, displayMass, displayWind, disp
 
 function FlightsPanel({ launches, displayAltitude, displayMass, displayWind, displayTemperature, exportData, onDelete, onEdit, onNew }: { launches: Launch[]; displayAltitude: (v: number) => string; displayMass: (v: number) => string; displayWind: (v: number) => string; displayTemperature: (v: number) => string; exportData: () => void; onDelete: (id: string) => void; onEdit: (launch: Launch) => void; onNew: () => void }) { return <><section className="page-heading"><div><p className="eyebrow">FLIGHT LOGBOOK</p><h1>All flights</h1><p className="subtitle">Review, export, and manage your team's launch history.</p></div><div className="heading-actions"><button className="secondary-button" onClick={exportData}><Download size={16} /> Export</button><button className="primary-button" onClick={onNew}><Plus size={17} /> Log a flight</button></div></section><section className="full-table-section"><div className="section-heading"><div><h2>{launches.length} launches</h2><p>Sorted by most recent</p></div></div><FlightTable launches={[...launches].reverse()} displayAltitude={displayAltitude} displayMass={displayMass} displayWind={displayWind} displayTemperature={displayTemperature} onDelete={onDelete} onEdit={onEdit} /></section></> }
 
-function SettingsPanel({ units, setUnits, targetAltitude, setTargetAltitude, theme, setTheme }: { units: Units; setUnits: (u: Units) => void; targetAltitude: number; setTargetAltitude: (n: number) => void; theme: 'light' | 'dark'; setTheme: (t: 'light' | 'dark') => void }) { return <><section className="page-heading"><div><p className="eyebrow">WORKSPACE PREFERENCES</p><h1>Settings</h1><p className="subtitle">Tune your display and prediction defaults.</p></div></section><section className="settings-grid"><div className="settings-card"><div className="settings-card-heading"><div className="settings-big-icon"><Target size={20} /></div><div><h2>Target altitude</h2><p>Used for recommendations and chart reference lines.</p></div></div><label>DEFAULT TARGET <div className="input-with-unit"><input type="number" min="1" value={targetAltitude} onChange={(event) => setTargetAltitude(Number(event.target.value))} /><span>ft</span></div></label><p className="field-help">You can change the target any time without changing historical flight data.</p></div><div className="settings-card"><div className="settings-card-heading"><div className="settings-big-icon purple"><Settings2 size={20} /></div><div><h2>Display units</h2><p>Choose how measurements appear throughout the app.</p></div></div><div className="unit-options"><button className={units === 'imperial' ? 'selected' : ''} onClick={() => setUnits('imperial')}><b>Imperial</b><span>ft · g · mph · inHg</span>{units === 'imperial' && <Check size={16} />}</button><button className={units === 'metric' ? 'selected' : ''} onClick={() => setUnits('metric')}><b>Metric</b><span>m · g · km/h · hPa</span>{units === 'metric' && <Check size={16} />}</button></div><p className="field-help">Your preference is saved automatically.</p></div><div className="settings-card"><div className="settings-card-heading"><div className="settings-big-icon"><Sun size={20} /></div><div><h2>Theme</h2><p>Choose your preferred color scheme.</p></div></div><div className="unit-options"><button className={theme === 'light' ? 'selected' : ''} onClick={() => setTheme('light')}><b>Light</b><span>Bright and clean</span>{theme === 'light' && <Check size={16} />}</button><button className={theme === 'dark' ? 'selected' : ''} onClick={() => setTheme('dark')}><b>Dark</b><span>Easy on the eyes</span>{theme === 'dark' && <Check size={16} />}</button></div><p className="field-help">Your theme preference is saved automatically.</p></div></section></> }
+function SettingsPanel({ units, setUnits, targetAltitude, setTargetAltitude, theme, setTheme, activeRocket, onEditRocket }: { units: Units; setUnits: (u: Units) => void; targetAltitude: number; setTargetAltitude: (n: number) => void; theme: 'light' | 'dark'; setTheme: (t: 'light' | 'dark') => void; activeRocket?: Rocket; onEditRocket: () => void }) { return <><section className="page-heading"><div><p className="eyebrow">WORKSPACE PREFERENCES</p><h1>Settings</h1><p className="subtitle">Tune your display and prediction defaults.</p></div></section><section className="settings-grid"><div className="settings-card"><div className="settings-card-heading"><div className="settings-big-icon"><RocketIcon size={20} /></div><div><h2>Active rocket</h2><p>Currently tracking {activeRocket?.name ?? 'No rocket selected'}.</p></div></div><button className="secondary-button" onClick={onEditRocket} style={{ marginTop: '12px' }}>Manage Rockets</button></div><div className="settings-card"><div className="settings-card-heading"><div className="settings-big-icon"><Target size={20} /></div><div><h2>Target altitude</h2><p>Used for recommendations and chart reference lines.</p></div></div><label>DEFAULT TARGET <div className="input-with-unit"><input type="number" min="1" value={targetAltitude} onChange={(event) => setTargetAltitude(Number(event.target.value))} /><span>ft</span></div></label><p className="field-help">Target is saved per rocket automatically.</p></div><div className="settings-card"><div className="settings-card-heading"><div className="settings-big-icon purple"><Settings2 size={20} /></div><div><h2>Display units</h2><p>Choose how measurements appear throughout the app.</p></div></div><div className="unit-options"><button className={units === 'imperial' ? 'selected' : ''} onClick={() => setUnits('imperial')}><b>Imperial</b><span>ft · g · mph · inHg</span>{units === 'imperial' && <Check size={16} />}</button><button className={units === 'metric' ? 'selected' : ''} onClick={() => setUnits('metric')}><b>Metric</b><span>m · g · km/h · hPa</span>{units === 'metric' && <Check size={16} />}</button></div><p className="field-help">Your preference is saved automatically.</p></div><div className="settings-card"><div className="settings-card-heading"><div className="settings-big-icon"><Sun size={20} /></div><div><h2>Theme</h2><p>Choose your preferred color scheme.</p></div></div><div className="unit-options"><button className={theme === 'light' ? 'selected' : ''} onClick={() => setTheme('light')}><b>Light</b><span>Bright and clean</span>{theme === 'light' && <Check size={16} />}</button><button className={theme === 'dark' ? 'selected' : ''} onClick={() => setTheme('dark')}><b>Dark</b><span>Easy on the eyes</span>{theme === 'dark' && <Check size={16} />}</button></div><p className="field-help">Your theme preference is saved automatically.</p></div></section></> }
 
 function LaunchModal({ form, setForm, onClose, onSubmit, units, updateForm, editing, rocketMassInput, setRocketMassInput }: { form: FormValues; setForm: React.Dispatch<React.SetStateAction<FormValues>>; onClose: () => void; onSubmit: (e: React.FormEvent) => void; units: Units; updateForm: (field: keyof FormValues, value: string) => void; editing: boolean; rocketMassInput: string; setRocketMassInput: (value: string) => void }) { const field = (name: keyof FormValues, label: string, unit: string, step = '1', inputValue?: string, onInputChange?: (value: string) => void) => <label className="form-field">{label}<div className="input-with-unit"><input required={name !== 'notes'} type={name === 'date' ? 'date' : name === 'notes' ? 'text' : 'number'} step={step} value={inputValue ?? form[name] as string | number} onChange={(event) => name === 'date' || name === 'notes' ? setForm((current) => ({ ...current, [name]: event.target.value })) : onInputChange ? onInputChange(event.target.value) : updateForm(name, event.target.value)} /><span>{unit}</span></div></label>; const temperatureInputValue = units === 'imperial' ? String(form.temperature) : String(fahrenheitToCelsius(form.temperature)); const updateTemperature = (value: string) => updateForm('temperature', value === '' ? '' : String(units === 'imperial' ? Number(value) : celsiusToFahrenheit(Number(value)))); return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal"><div className="modal-heading"><div><p className="eyebrow">{editing ? 'EDIT FLIGHT RECORD' : 'NEW FLIGHT RECORD'}</p><h2>{editing ? 'Edit flight' : 'Log a flight'}</h2><p>Capture the conditions while they are still fresh.</p></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={19} /></button></div><form onSubmit={onSubmit}><div className="form-section"><h3>Flight performance</h3><div className="form-grid">{field('date', 'Launch date', '', '1')}{field('altitude', 'Peak altitude', units === 'imperial' ? 'ft' : 'm')}{field('flightTime', 'Total flight time', 'sec', '0.1')}{field('descentTime', 'Descent time', 'sec', '0.1')}</div></div><div className="form-section"><h3>Configuration</h3><div className="form-grid">{field('rocketMass', 'Rocket mass (including motor)', 'g', 'any', rocketMassInput, (value) => { setRocketMassInput(value); updateForm('rocketMass', value) })}{field('parachuteSize', 'Parachute size', units === 'imperial' ? 'in' : 'cm')}{field('windSpeed', 'Wind speed', units === 'imperial' ? 'mph' : 'km/h', '0.1')}</div></div><div className="form-section"><h3>Atmospheric conditions</h3><div className="form-grid">{field('airPressure', 'Air pressure', units === 'imperial' ? 'inHg' : 'hPa', '0.01')}{field('humidity', 'Humidity', '%', '1')}{field('temperature', 'Temperature', units === 'imperial' ? '°F' : '°C', '0.1', temperatureInputValue, updateTemperature)}<label className="form-field full-field">Notes <input type="text" placeholder="Anything worth remembering?" value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} /></label></div></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button"><Check size={16} /> {editing ? 'Update flight' : 'Save flight'}</button></div></form></div></div> }
+
+function NewRocketModal({ name, setName, description, setDescription, onCreate, onClose }: { name: string; setName: (v: string) => void; description: string; setDescription: (v: string) => void; onCreate: () => void; onClose: () => void }) {
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    onCreate()
+  }
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal"><div className="modal-heading"><div><p className="eyebrow">NEW ROCKET</p><h2>Build a new rocket</h2><p>Add a rocket to your team's fleet.</p></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={19} /></button></div><form onSubmit={handleSubmit}><div className="form-section"><label className="form-field">Rocket name<input type="text" required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., Phoenix Pro, Atlas X" /></label><label className="form-field">Description (optional)<input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g., High-altitude variant" /></label></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button"><Plus size={16} /> Create rocket</button></div></form></div></div>
+}
+
+function EditRocketModal({ name, setName, description, setDescription, onUpdate, onDelete, onClose }: { name: string; setName: (v: string) => void; description: string; setDescription: (v: string) => void; onUpdate: () => void; onDelete: () => void; onClose: () => void }) {
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    onUpdate()
+  }
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className="modal"><div className="modal-heading"><div><p className="eyebrow">EDIT ROCKET</p><h2>Rocket settings</h2><p>Update your rocket details.</p></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={19} /></button></div><form onSubmit={handleSubmit}><div className="form-section"><label className="form-field">Rocket name<input type="text" required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Rocket name" /></label><label className="form-field">Description (optional)<input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description" /></label></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onDelete} style={{ marginRight: 'auto', color: 'var(--color-error)' }}><Trash2 size={16} /> Delete</button><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="submit" className="primary-button"><Check size={16} /> Update rocket</button></div></form></div></div>
+}
+
+function OnboardingWizard({ name, setName, description, setDescription, onCreate, onSkip }: { name: string; setName: (v: string) => void; description: string; setDescription: (v: string) => void; onCreate: () => void; onSkip: () => void }) {
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    onCreate()
+  }
+  return <div className="modal-backdrop"><div className="modal" style={{ maxWidth: '480px' }}><div className="modal-heading"><div><p className="eyebrow">WELCOME TO ROCKETS</p><h2>Let's build something great</h2><p>Create your first rocket to start tracking flights.</p></div></div><form onSubmit={handleSubmit}><div className="form-section"><label className="form-field">Rocket name<input type="text" required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., Team Rocket v1" /></label><label className="form-field">Description (optional)<input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g., High-altitude competition rocket" /></label></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onSkip}>Skip for now</button><button type="submit" className="primary-button"><RocketIcon size={16} /> Create first rocket</button></div></form></div></div>
+}
 
 export default App
