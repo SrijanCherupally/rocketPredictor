@@ -7,8 +7,8 @@ import { CloudConflictError, createLaunch, deleteLaunch, fetchWorkspace, importL
 import { isCloudConfigured, supabase } from './supabase'
 import { seedLaunches } from './seed'
 
-const STORAGE_KEY = 'apogee-launches-v1'
-const PREF_KEY = 'apogee-prefs-v1'
+const STORAGE_KEY = 'apexflite-launches-v1'
+const PREF_KEY = 'apexflite-prefs-v1'
 type Units = 'imperial' | 'metric'
 
 type FormValues = Omit<Launch, 'id'>
@@ -80,7 +80,18 @@ function App() {
   const [authPassword, setAuthPassword] = useState('')
   const [authBusy, setAuthBusy] = useState(false)
   const [authMessage, setAuthMessage] = useState('')
+  const [resendBusy, setResendBusy] = useState(false)
+  const [resendEmail, setResendEmail] = useState('')
   const [migrationDismissed, setMigrationDismissed] = useState(false)
+
+  const authRedirectUrl = () => {
+    const configured = import.meta.env.VITE_AUTH_REDIRECT_URL ?? import.meta.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL
+    if (configured) return configured
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return 'https://rocketpredictor.vercel.app'
+    }
+    return `${window.location.origin}${window.location.pathname}`
+  }
 
   useEffect(() => {
     if (session && (!preferencesReady || pendingImport !== null)) return
@@ -128,7 +139,7 @@ function App() {
       } catch { /* ignore malformed local storage */ }
       const existingIds = new Set(workspace.launches.map((launch) => launch.id))
       const candidates = local.filter((launch) => !existingIds.has(launch.id))
-      const marker = `apogee-migrated-${session.user.id}`
+      const marker = `apexFlite-migrated-${session.user.id}`
       let alreadyMigrated = false
       try { alreadyMigrated = localStorage.getItem(marker) === 'true' } catch { /* storage may be unavailable */ }
       if (!alreadyMigrated && candidates.length > 0) setPendingImport(candidates)
@@ -226,7 +237,7 @@ function App() {
 
   const exportData = () => {
     const blob = new Blob([JSON.stringify(launches, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'apogee-flights.json'; link.click(); URL.revokeObjectURL(url)
+    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'apexFlite-flights.json'; link.click(); URL.revokeObjectURL(url)
     setToast('Flight data exported')
   }
   const signOut = () => {
@@ -242,39 +253,58 @@ function App() {
     setAuthBusy(true); setAuthMessage(''); setCloudError('')
     try {
       if (authMode === 'reset') {
-        const { error } = await supabase.auth.resetPasswordForEmail(authEmail, { redirectTo: window.location.href })
+        const { error } = await supabase.auth.resetPasswordForEmail(authEmail, { redirectTo: authRedirectUrl() })
         if (error) throw error
         setAuthMessage('Password reset instructions sent.')
       } else {
         const result = authMode === 'sign-up'
-          ? await supabase.auth.signUp({ email: authEmail, password: authPassword, options: { emailRedirectTo: window.location.href } })
+          ? await supabase.auth.signUp({ email: authEmail, password: authPassword, options: { emailRedirectTo: authRedirectUrl() } })
           : await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword })
-        if (result.error) throw result.error
-        if (authMode === 'sign-up' && !result.data.session) setAuthMessage('Check your email to confirm your account, then sign in.')
+        if (result.error) {
+          if (authMode === 'sign-in' && /confirm|verified/i.test(result.error.message)) {
+            setResendEmail(authEmail)
+            setAuthMessage('Please confirm your email before signing in. You can resend the verification email below.')
+            return
+          }
+          throw result.error
+        }
+        if (authMode === 'sign-up' && !result.data.session) { setResendEmail(authEmail); setAuthMessage('Check your email to confirm your account, then sign in.') }
       }
     } catch (error) {
       setAuthMessage(error instanceof Error ? error.message : 'Unable to authenticate.')
     } finally { setAuthBusy(false) }
   }
+  const resendVerification = async () => {
+    if (!supabase || !resendEmail) return
+    setResendBusy(true); setAuthMessage('')
+    try {
+      const { error } = await supabase.auth.resend({ type: 'signup', email: resendEmail, options: { emailRedirectTo: authRedirectUrl() } })
+      if (error) throw error
+      setAuthMessage('A new verification email has been sent.')
+    } catch (error) {
+      setAuthMessage(/rate|limit/i.test(error instanceof Error ? error.message : '') ? 'Please wait before requesting another email.' : 'Unable to resend the verification email. Please try again.')
+    } finally { setResendBusy(false) }
+  }
+
   const importLocalData = async () => {
     if (!session || !supabase || !pendingImport) return
     try {
       await importLaunches(supabase, session.user.id, pendingImport)
       const workspace = await fetchWorkspace(supabase, session.user.id)
       setLaunches(workspace.launches); setVersions(workspace.versions)
-      localStorage.setItem(`apogee-migrated-${session.user.id}`, 'true')
+      localStorage.setItem(`apexFlite-migrated-${session.user.id}`, 'true')
       setPendingImport(null); setToast(`${pendingImport.length} local flights transferred to the cloud`)
     } catch (error) { setToast(`Transfer failed · ${error instanceof Error ? error.message : 'try again'}`) }
   }
 
-  if (!authReady) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><strong>apogee</strong></div><h1>Connecting to your workspace…</h1><p>Restoring your secure cloud session.</p><div className="loading-line" /></div></div>
-  if (isCloudConfigured && !session) return <AuthScreen mode={authMode} setMode={(mode) => { setAuthMode(mode); setAuthMessage(''); setCloudError('') }} email={authEmail} setEmail={setAuthEmail} password={authPassword} setPassword={setAuthPassword} busy={authBusy} message={authMessage} error={cloudError} onSubmit={submitAuth} />
+  if (!authReady) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><strong>apexFlite</strong></div><h1>Connecting to your workspace…</h1><p>Restoring your secure cloud session.</p><div className="loading-line" /></div></div>
+  if (isCloudConfigured && !session) return <AuthScreen mode={authMode} setMode={(mode) => { setAuthMode(mode); setAuthMessage(''); setCloudError(''); setResendEmail('') }} email={authEmail} setEmail={setAuthEmail} password={authPassword} setPassword={setAuthPassword} busy={authBusy} message={authMessage} error={cloudError} onSubmit={submitAuth} resendEmail={resendEmail} resendBusy={resendBusy} onResend={resendVerification} />
   const syncStatus = cloudLoading ? 'Syncing…' : session ? 'Synced online' : 'Local preview mode'
 
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}>
-        <div className="brand"><div className="brand-mark"><Rocket size={20} /></div><div><strong>apogee</strong><span>flight intelligence</span></div></div>
+        <div className="brand"><div className="brand-mark"><Rocket size={20} /></div><div><strong>apexFlite</strong><span>flight intelligence</span></div></div>
         <div className="workspace-switcher"><div className="workspace-icon">T</div><div><b>TARC Rocketry</b><span>{session ? 'Cloud workspace' : 'Local preview'}</span></div><ChevronDown size={16} /></div>
         <nav><button className={activeSection === 'overview' ? 'active' : ''} onClick={() => { setActiveSection('overview'); setMobileNav(false) }}><BarChart3 size={18} /> Overview</button><button className={activeSection === 'flights' ? 'active' : ''} onClick={() => { setActiveSection('flights'); setMobileNav(false) }}><Database size={18} /> Flights <em>{launches.length}</em></button><button onClick={() => setToast('Team insights are coming soon')}><Sparkles size={18} /> Insights <span className="new-pill">NEW</span></button></nav>
         <div className="sidebar-bottom"><button className={activeSection === 'settings' ? 'active' : ''} onClick={() => { setActiveSection('settings'); setMobileNav(false) }}><Settings2 size={18} /> Settings</button><div className="profile"><div className="avatar">{session ? (session.user.email?.slice(0, 2).toUpperCase() ?? 'RT') : 'LP'}</div><div><b>{session?.user.email ?? 'Local preview'}</b><span>{session ? 'Synced team access' : 'Cloud not configured'}</span></div>{session ? <button className="profile-menu" onClick={signOut} aria-label="Sign out"><LogOut size={14} /></button> : <MoreDots />}</div></div>
@@ -299,10 +329,10 @@ function App() {
   )
 }
 
-function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, busy, message, error, onSubmit }: { mode: 'sign-in' | 'sign-up' | 'reset'; setMode: (mode: 'sign-in' | 'sign-up' | 'reset') => void; email: string; setEmail: (value: string) => void; password: string; setPassword: (value: string) => void; busy: boolean; message: string; error: string; onSubmit: (event: React.FormEvent) => void }) {
+function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, busy, message, error, onSubmit, resendEmail, resendBusy, onResend }: { mode: 'sign-in' | 'sign-up' | 'reset'; setMode: (mode: 'sign-in' | 'sign-up' | 'reset') => void; email: string; setEmail: (value: string) => void; password: string; setPassword: (value: string) => void; busy: boolean; message: string; error: string; onSubmit: (event: React.FormEvent) => void; resendEmail: string; resendBusy: boolean; onResend: () => void }) {
   const reset = mode === 'reset'
   const signUp = mode === 'sign-up'
-  return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><div><strong>apogee</strong><span>flight intelligence</span></div></div><p className="eyebrow">SECURE TEAM WORKSPACE</p><h1>{reset ? 'Reset your password' : signUp ? 'Create your account' : 'Welcome back'}</h1><p className="auth-copy">{reset ? 'We will send a secure link to your email address.' : 'Sign in to sync your launch history across every device.'}</p><form className="auth-form" onSubmit={onSubmit}><label>Email address<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></label>{!reset && <label>Password<input type="password" autoComplete={signUp ? 'new-password' : 'current-password'} required minLength={6} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 6 characters" /></label>}{(message || error) && <p className={error ? 'auth-feedback error' : 'auth-feedback'}>{error || message}</p>}<button type="submit" className="primary-button auth-submit" disabled={busy}>{busy ? 'Working…' : reset ? 'Send reset link' : signUp ? 'Create account' : 'Sign in'}</button></form><div className="auth-links">{reset ? <button onClick={() => setMode('sign-in')}>Back to sign in</button> : <><button onClick={() => setMode(signUp ? 'sign-in' : 'sign-up')}>{signUp ? 'Already have an account? Sign in' : 'Create an account'}</button>{!signUp && <button onClick={() => setMode('reset')}>Forgot password?</button>}</>}</div><small className="auth-note">Your launch data is private to your authenticated account.</small></div></div>
+  return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><div><strong>apexFlite</strong><span>flight intelligence</span></div></div><p className="eyebrow">SECURE TEAM WORKSPACE</p><h1>{reset ? 'Reset your password' : signUp ? 'Create your account' : 'Welcome back'}</h1><p className="auth-copy">{reset ? 'We will send a secure link to your email address.' : 'Sign in to sync your launch history across every device.'}</p><form className="auth-form" onSubmit={onSubmit}><label>Email address<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></label>{!reset && <label>Password<input type="password" autoComplete={signUp ? 'new-password' : 'current-password'} required minLength={6} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 6 characters" /></label>}{(message || error) && <p className={error ? 'auth-feedback error' : 'auth-feedback'}>{error || message}</p>}<button type="submit" className="primary-button auth-submit" disabled={busy}>{busy ? 'Working…' : reset ? 'Send reset link' : signUp ? 'Create account' : 'Sign in'}</button></form>{resendEmail && !reset && <button type="button" className="secondary-button auth-resend" onClick={onResend} disabled={resendBusy}>{resendBusy ? 'Sending…' : 'Resend verification email'}</button>}<div className="auth-links">{reset ? <button onClick={() => setMode('sign-in')}>Back to sign in</button> : <><button onClick={() => setMode(signUp ? 'sign-in' : 'sign-up')}>{signUp ? 'Already have an account? Sign in' : 'Create an account'}</button>{!signUp && <button onClick={() => setMode('reset')}>Forgot password?</button>}</>}</div><small className="auth-note">Your launch data is private to your authenticated account.</small></div></div>
 }
 
 function MigrationDialog({ count, busy, onImport, onDismiss }: { count: number; busy: boolean; onImport: () => void | Promise<void>; onDismiss: () => void }) {
