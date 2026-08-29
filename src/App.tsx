@@ -88,7 +88,7 @@ function App() {
     const configured = import.meta.env.VITE_AUTH_REDIRECT_URL ?? import.meta.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL
     if (configured) return configured
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      return 'https://apexflite.vercel.app'
+      return 'https://rocketpredictor.vercel.app'
     }
     return `${window.location.origin}${window.location.pathname}`
   }
