@@ -1,10 +1,27 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { ArrowDownToLine, ArrowUpRight, BarChart3, Bell, Check, ChevronDown, CloudSun, Database, Download, Gauge, LogOut, Menu, Moon, Pencil, Plus, Rocket as RocketIcon, Settings2, Sparkles, Sun, Target, Trash2, Wind, X, Activity } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpRight, BarChart3, Bell, Check, ChevronDown, CloudSun, Copy, Database, Download, Gauge, LogOut, Menu, Pencil, Plus, Rocket as RocketIcon, Scale, Settings2, Sparkles, Sun, Target, Trash2, Wind, X, Activity } from 'lucide-react'
 import { useTheme } from './useTheme'
 import { Area, Brush, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Scatter, Tooltip, XAxis, YAxis } from 'recharts'
-import { adjustedAltitude, adjustedRegression, linearRegression, median, totalMass, type Launch } from './analytics'
-import { CloudConflictError, createLaunch, deleteLaunch, fetchRockets, createRocket, updateRocket, deleteRocket, fetchRocketData, saveRocketPreferences, createLaunchForRocket, updateLaunchForRocket, deleteLaunchForRocket, importLaunches, savePreferences, type Rocket, type CloudLaunchRow } from './cloud'
+import { adjustedAltitude, adjustedRegression, buildBallastFormula, computeBallast, linearRegression, median, totalMass, type Launch, type BallastFormula } from './analytics'
+import {
+  CloudConflictError,
+  createLaunch,
+  createRocket,
+  deleteLaunch,
+  deleteRocket,
+  fetchLegacyLaunches,
+  fetchRockets,
+  fetchRocketData,
+  fetchRocketPreferences,
+  importLaunches,
+  saveRocketPreferences,
+  saveUserPreferences,
+  updateLaunch,
+  updateRocket,
+  type Rocket,
+  type CloudLaunchRow,
+} from './cloud'
 import { isCloudConfigured, supabase } from './supabase'
 import { seedLaunches } from './seed'
 
@@ -65,7 +82,6 @@ function App() {
   const [units, setUnits] = useState<Units>(() => {
     try { return (localStorage.getItem(PREF_KEY) as Units) ?? 'imperial' } catch { return 'imperial' }
   })
-  const [targetAltitude, setTargetAltitude] = useState(800)
   const [form, setForm] = useState<FormValues>(emptyForm)
   const [rocketMassInput, setRocketMassInput] = useState(String(emptyForm.rocketMass))
   const [showForm, setShowForm] = useState(false)
@@ -75,8 +91,9 @@ function App() {
   const [toast, setToast] = useState('')
   const [session, setSession] = useState<Session | null>(null)
   const [authReady, setAuthReady] = useState(!isCloudConfigured)
-  const [cloudLoading, setCloudLoading] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [cloudError, setCloudError] = useState('')
+  const [lastFetchedRocketId, setLastFetchedRocketId] = useState<string | null>(null)
   const [versions, setVersions] = useState<Record<string, number>>({})
   const [preferencesReady, setPreferencesReady] = useState(false)
   const [pendingImport, setPendingImport] = useState<Launch[] | null>(null)
@@ -101,11 +118,14 @@ function App() {
   const [showOnboardingWizard, setShowOnboardingWizard] = useState(false)
   const [rocketTargetAltitude, setRocketTargetAltitude] = useState(800)
 
+  // Ballast calculator
+  const [ballastMassInput, setBallastMassInput] = useState('')
+
   const authRedirectUrl = () => {
     const configured = import.meta.env.VITE_AUTH_REDIRECT_URL ?? import.meta.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL
     if (configured) return configured
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      return 'https://rocketpredictor.vercel.app'
+      return 'https://apexflite.vercel.app'
     }
     return `${window.location.origin}${window.location.pathname}`
   }
@@ -141,71 +161,69 @@ function App() {
 
   useEffect(() => {
     if (!session || !supabase) return
-    let active = true
+    const active = true
 
-    // Fetch rockets and handle onboarding/migration
     Promise.all([
       fetchRockets(supabase, session.user.id),
-      supabase.from('launches').select('rocket_id').eq('user_id', session.user.id).limit(1).maybeSingle()
-    ]).then(([userRockets, existingLaunchRow]) => {
+      fetchRocketPreferences(supabase, session.user.id),
+      fetchLegacyLaunches(supabase, session.user.id),
+    ]).then(([userRockets, rocketPrefs, legacyLaunches]) => {
       if (!active) return
 
-      if (userRockets.length === 0 && !existingLaunchRow.data) {
-        // New user - show onboarding wizard
+      if (userRockets.length === 0 && legacyLaunches.length === 0) {
+        // Completely new user – show onboarding wizard
         setShowOnboardingWizard(true)
         setRockets([])
         setActiveRocketId(null)
         setPreferencesReady(true)
-      } else if (userRockets.length === 0 && existingLaunchRow.data) {
-        // User has launches but no rockets - create default rocket
-        if (!supabase) return
-        createRocket(supabase, session.user.id, 'Default Rocket', 'Migrated flights').then(newRocket => {
-          if (active) {
-            setRockets([newRocket])
-            setActiveRocketId(newRocket.id)
-            setPreferencesReady(true)
-          }
-        }).catch(err => {
-          if (active) setCloudError(err.message)
-        })
+      } else if (userRockets.length === 0 && legacyLaunches.length > 0) {
+        // Returning user with un-migrated flights – onboard to create a rocket
+        setPendingImport(legacyLaunches)
+        setShowOnboardingWizard(true)
+        setRockets([])
+        setActiveRocketId(null)
+        setPreferencesReady(true)
       } else {
-        // User has rockets
+        // Existing rocket setup
+        const first = userRockets[0]
         setRockets(userRockets)
-        setActiveRocketId(userRockets[0].id)
+        setActiveRocketId(first.id)
+        setRocketTargetAltitude(rocketPrefs.targetAltitude)
         setPreferencesReady(true)
       }
     }).catch((error: Error) => {
       if (active) {
         setCloudError(error.message)
-        setCloudLoading(false)
-        // Still set preferences ready so UI doesn't hang
         setPreferencesReady(true)
       }
     })
   }, [session])
 
-  // Load rocket data when active rocket changes
   useEffect(() => {
     if (!activeRocketId || !session || !supabase) return
-    setCloudLoading(true)
+    let active = true
     fetchRocketData(supabase, session.user.id, activeRocketId).then((data) => {
-      if (setCloudLoading) {
-        setLaunches(data.launches)
-        setVersions(data.versions)
-        setRocketTargetAltitude(data.targetAltitude)
-        setCloudLoading(false)
-      }
+      if (!active) return
+      setLaunches(data.launches)
+      setVersions(data.versions)
+      setRocketTargetAltitude(data.targetAltitude)
+      setLastFetchedRocketId(activeRocketId)
     }).catch((error: Error) => {
+      if (!active) return
       setCloudError(error.message)
-      setCloudLoading(false)
+      setLastFetchedRocketId(activeRocketId)
     })
 
     // Subscribe to realtime updates for this rocket
     const channel = supabase.channel(`rocket-${activeRocketId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'launches', filter: `user_id=eq.${session.user.id}` }, (payload) => {
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'launches',
+        filter: `user_id=eq.${session.user.id},rocket_id=eq.${activeRocketId}`,
+      }, (payload) => {
         const row = payload.new as CloudLaunchRow
         const oldRow = payload.old as Partial<CloudLaunchRow>
-        if (row?.rocket_id !== activeRocketId) return // Ignore launches from other rockets
         if (payload.eventType === 'DELETE') {
           setLaunches((current) => current.filter((launch) => launch.id !== oldRow.launch_id))
           setVersions((current) => { const next = { ...current }; delete next[oldRow.launch_id ?? '']; return next })
@@ -215,9 +233,12 @@ function App() {
         }
       }).subscribe()
 
-    return () => { if (supabase) void supabase.removeChannel(channel) }
+    return () => { active = false; if (supabase) void supabase.removeChannel(channel) }
   }, [activeRocketId, session])
 
+
+  // Derived: show "Syncing…" when a rocket is active but its data hasn't loaded yet
+  const cloudLoading = Boolean(activeRocketId && activeRocketId !== lastFetchedRocketId)
 
   const rawModel = useMemo(() => linearRegression(launches.map((launch) => ({ x: totalMass(launch), y: launch.altitude }))), [launches])
   const adjustedModel = useMemo(() => adjustedRegression(launches), [launches])
@@ -229,6 +250,13 @@ function App() {
   const avgAltitude = launches.length ? launches.reduce((sum, launch) => sum + launch.altitude, 0) / launches.length : 0
   const avgDescent = launches.length ? launches.reduce((sum, launch) => sum + launch.descentTime, 0) / launches.length : 0
   const targetGap = avgAltitude - rocketTargetAltitude
+  const avgMass = launches.length ? launches.reduce((sum, launch) => sum + totalMass(launch), 0) / launches.length : 578
+  const defaultBallastMass = ballastMassInput === '' ? avgMass : Number(ballastMassInput)
+  const ballastFormula = useMemo(() => adjustedModel ? buildBallastFormula(adjustedModel, reference) : null, [adjustedModel, reference])
+  const ballastResult = useMemo(() => {
+    if (!ballastFormula || !Number.isFinite(defaultBallastMass) || defaultBallastMass <= 0) return null
+    return computeBallast(ballastFormula, defaultBallastMass, rocketTargetAltitude)
+  }, [ballastFormula, defaultBallastMass, rocketTargetAltitude])
   const closeModal = () => { setForm(emptyForm); setRocketMassInput(String(emptyForm.rocketMass)); setEditingLaunchId(null); setShowForm(false) }
 
   const onSaveLaunch = async (event: React.FormEvent) => {
@@ -237,8 +265,8 @@ function App() {
     if (session && supabase && activeRocketId) {
       try {
         const row = editingLaunchId
-          ? await updateLaunchForRocket(supabase, session.user.id, launch, activeRocketId, versions[launch.id] ?? 1)
-          : await createLaunchForRocket(supabase, session.user.id, launch, activeRocketId)
+          ? await updateLaunch(supabase, session.user.id, launch, activeRocketId, versions[launch.id] ?? 1)
+          : await createLaunch(supabase, session.user.id, launch, activeRocketId)
         setLaunches((current) => editingLaunchId ? current.map((item) => item.id === launch.id ? launch : item) : [...current, launch])
         setVersions((current) => ({ ...current, [launch.id]: row.version }))
         setToast(editingLaunchId ? 'Flight updated · synced online' : 'Flight saved · synced online')
@@ -271,7 +299,7 @@ function App() {
     if (!window.confirm('Remove this flight from the rocket?')) return
     if (session && supabase && activeRocketId) {
       try {
-        await deleteLaunchForRocket(supabase, session.user.id, id, activeRocketId, versions[id] ?? 1)
+        await deleteLaunch(supabase, session.user.id, id, activeRocketId, versions[id] ?? 1)
         setLaunches((current) => current.filter((launch) => launch.id !== id))
         setVersions((current) => { const next = { ...current }; delete next[id]; return next })
         setToast('Flight removed · synced online')
@@ -291,7 +319,7 @@ function App() {
   const displayTemperature = (fahrenheit: number) => formatTemperature(fahrenheit, units)
   const changeUnits = (next: Units) => {
     setUnits(next)
-    if (session && supabase && preferencesReady) void savePreferences(supabase, session.user.id, { units: next, targetAltitude: rocketTargetAltitude }).catch((error: Error) => setToast(`Preference sync failed · ${error.message}`))
+    if (session && supabase && preferencesReady) void saveUserPreferences(supabase, session.user.id, next).catch((error: Error) => setToast(`Preference sync failed · ${error.message}`))
   }
   const changeTargetAltitude = (next: number) => {
     setRocketTargetAltitude(next)
@@ -362,7 +390,17 @@ function App() {
     if (!supabase) return
     void supabase.auth.signOut().then(({ error }) => {
       if (error) setCloudError(error.message)
-      else { setLaunches([]); setVersions({}); setPendingImport(null); setPreferencesReady(false); setToast('Signed out') }
+      else {
+        setLaunches([])
+        setVersions({})
+        setRockets([])
+        setActiveRocketId(null)
+        setPendingImport(null)
+        setPreferencesReady(false)
+        setRocketTargetAltitude(800)
+        setLastFetchedRocketId(null)
+        setToast('Signed out')
+      }
     })
   }
   const submitAuth = async (event: React.FormEvent) => {
@@ -406,8 +444,9 @@ function App() {
 
   const importLocalData = async () => {
     if (!session || !supabase || !pendingImport) return
+    setImporting(true)
     try {
-      await importLaunches(supabase, session.user.id, pendingImport)
+      await importLaunches(supabase, session.user.id, pendingImport, activeRocketId!)
       // After import, reload the current rocket's data
       if (activeRocketId) {
         const data = await fetchRocketData(supabase, session.user.id, activeRocketId)
@@ -419,6 +458,8 @@ function App() {
       setToast(`${pendingImport.length} local flights transferred to the cloud`)
     } catch (error) {
       setToast(`Transfer failed · ${error instanceof Error ? error.message : 'try again'}`)
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -451,10 +492,11 @@ function App() {
         {cloudError && <div className="cloud-error"><span>{cloudError}</span><button onClick={() => setCloudError('')} aria-label="Dismiss cloud error"><X size={15} /></button></div>}
         {session && <div className={`sync-banner ${cloudLoading ? 'syncing' : ''}`}><span className="sync-dot" /> {syncStatus}<span>{session.user.email}</span></div>}
         {activeSection === 'settings' ? <SettingsPanel units={units} setUnits={changeUnits} targetAltitude={rocketTargetAltitude} setTargetAltitude={changeTargetAltitude} theme={theme} setTheme={setTheme} activeRocket={activeRocket} onEditRocket={() => { if (activeRocketId) { setEditingRocketId(activeRocketId); setNewRocketName(activeRocket?.name ?? ''); setNewRocketDescription(activeRocket?.description ?? ''); setShowEditRocketModal(true) } }} /> : activeSection === 'flights' ? <FlightsPanel launches={launches} displayAltitude={displayAltitude} displayMass={displayMass} displayWind={displayWind} displayTemperature={displayTemperature} exportData={exportData} onDelete={removeLaunch} onEdit={editLaunch} onNew={openNewLaunch} /> : <>
-        <section className="page-heading"><div><p className="eyebrow">THURSDAY, AUGUST 27, 2026 <span className="live-dot" /> LIVE MODEL</p><h1>Good morning, team.</h1><p className="subtitle">Your flight data is getting smarter with every launch.</p></div><button className="primary-button" onClick={openNewLaunch}><Plus size={17} /> Log a flight</button></section>
+        <section className="page-heading"><div><p className="eyebrow">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()} <span className="live-dot" /> LIVE MODEL</p><h1>Good morning, team.</h1><p className="subtitle">Your flight data is getting smarter with every launch.</p></div><button className="primary-button" onClick={openNewLaunch}><Plus size={17} /> Log a flight</button></section>
         <section className="target-banner"><div className="target-icon"><Target size={20} /></div><div><span>Current target altitude</span><strong>{formatNumber(rocketTargetAltitude)} <small>ft</small></strong></div><div className="target-divider" /><div className="target-status"><Check size={15} /> <span>{Math.abs(targetGap) < 15 ? 'On target range' : targetGap > 0 ? 'Running high' : 'Running low'}</span></div><button onClick={() => setActiveSection('settings')}>Edit target <ArrowUpRight size={15} /></button></section>
         <section className="stats-grid"><StatCard label="FLIGHTS LOGGED" value={String(launches.length).padStart(2, '0')} note="+2 this month" trend="up" icon={<Database size={18} />} /><StatCard label="AVG. ALTITUDE" value={formatNumber(avgAltitude)} unit="ft" note={`${targetGap >= 0 ? '+' : ''}${formatNumber(targetGap)} ft vs target`} trend={targetGap >= 0 ? 'up' : 'down'} icon={<ArrowUpRight size={18} />} /><StatCard label="AVG. DESCENT" value={formatNumber(avgDescent, 1)} unit="sec" note="Target: 34.0 sec" trend={Math.abs(avgDescent - 34) < 2 ? 'up' : 'down'} icon={<ArrowDownToLine size={18} />} /><StatCard label="MODEL CONFIDENCE" value={adjustedModel ? formatNumber(adjustedModel.r2 * 100) : '—'} unit={adjustedModel ? '%' : ''} note={adjustedModel ? 'Weather model active' : 'Need 7+ flights'} trend="up" icon={<Gauge size={18} />} /></section>
-        <section className="analysis-grid"><AnalysisCard title="Raw altitude model" subtitle="Altitude vs. total mass · no weather compensation" icon={<Activity size={18} />} accent="blue" model={rawModel} recommendation={rawRecommendation} chart={<RawChart data={rawChart} target={targetAltitude} units={units} />} /><AnalysisCard title="Adjusted altitude model" subtitle="Compensated for wind, pressure & humidity" icon={<CloudSun size={18} />} accent="purple" model={adjustedModel} recommendation={adjustedRecommendation} chart={<AdjustedChart data={adjustedChart} target={targetAltitude} units={units} />} /></section>
+        <section className="analysis-grid"><AnalysisCard title="Raw altitude model" subtitle="Altitude vs. total mass · no weather compensation" icon={<Activity size={18} />} accent="blue" model={rawModel} recommendation={rawRecommendation} chart={<RawChart data={rawChart} target={rocketTargetAltitude} units={units} />} /><AnalysisCard title="Adjusted altitude model" subtitle="Compensated for wind, pressure & humidity" icon={<CloudSun size={18} />} accent="purple" model={adjustedModel} recommendation={adjustedRecommendation} chart={<AdjustedChart data={adjustedChart} target={rocketTargetAltitude} units={units} />} /></section>
+        <section className="ballast-section"><BallastPanel formula={ballastFormula} result={ballastResult} avgMass={avgMass} massInput={ballastMassInput} setMassInput={setBallastMassInput} onCopy={() => setToast('Formula copied')} /></section>
         <section className="recent-section"><div className="section-heading"><div><h2>Recent flights</h2><p>Latest performance from your team</p></div><button className="text-button" onClick={() => setActiveSection('flights')}>View all <ArrowUpRight size={15} /></button></div><FlightTable launches={launches.slice(-5).reverse()} displayAltitude={displayAltitude} displayMass={displayMass} displayWind={displayWind} displayTemperature={displayTemperature} onDelete={removeLaunch} onEdit={editLaunch} /></section>
         </>}
       </main>
@@ -462,7 +504,7 @@ function App() {
       {showNewRocketModal && <NewRocketModal name={newRocketName} setName={setNewRocketName} description={newRocketDescription} setDescription={setNewRocketDescription} onCreate={handleCreateRocket} onClose={() => { setShowNewRocketModal(false); setNewRocketName(''); setNewRocketDescription('') }} />}
       {showEditRocketModal && <EditRocketModal name={newRocketName} setName={setNewRocketName} description={newRocketDescription} setDescription={setNewRocketDescription} onUpdate={handleUpdateRocket} onDelete={handleDeleteRocket} onClose={() => { setShowEditRocketModal(false); setEditingRocketId(null); setNewRocketName(''); setNewRocketDescription('') }} />}
       {showOnboardingWizard && <OnboardingWizard name={newRocketName} setName={setNewRocketName} description={newRocketDescription} setDescription={setNewRocketDescription} onCreate={handleCreateRocket} onSkip={() => setShowOnboardingWizard(false)} />}
-      {pendingImport && !migrationDismissed && <MigrationDialog count={pendingImport.length} busy={cloudLoading} onImport={async () => { setCloudLoading(true); await importLocalData(); setCloudLoading(false) }} onDismiss={() => setMigrationDismissed(true)} />}
+      {pendingImport && !migrationDismissed && <MigrationDialog count={pendingImport.length} busy={importing} onImport={importLocalData} onDismiss={() => setMigrationDismissed(true)} />}
       {toast && <div className="toast"><Check size={16} /> {toast}</div>}
     </div>
   )
@@ -522,6 +564,115 @@ function OnboardingWizard({ name, setName, description, setDescription, onCreate
     onCreate()
   }
   return <div className="modal-backdrop"><div className="modal" style={{ maxWidth: '480px' }}><div className="modal-heading"><div><p className="eyebrow">WELCOME TO ROCKETS</p><h2>Let's build something great</h2><p>Create your first rocket to start tracking flights.</p></div></div><form onSubmit={handleSubmit}><div className="form-section"><label className="form-field">Rocket name<input type="text" required autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g., Team Rocket v1" /></label><label className="form-field">Description (optional)<input type="text" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g., High-altitude competition rocket" /></label></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onSkip}>Skip for now</button><button type="submit" className="primary-button"><RocketIcon size={16} /> Create first rocket</button></div></form></div></div>
+}
+
+function BallastPanel({ formula, result, avgMass, massInput, setMassInput, onCopy }: {
+  formula: BallastFormula | null
+  result: { predicted: number; massDelta: number; resultMass: number } | null
+  avgMass: number
+  massInput: string
+  setMassInput: (v: string) => void
+  onCopy: () => void
+}) {
+  const massValue = massInput === '' ? avgMass : Number(massInput)
+  const validMass = Number.isFinite(massValue) && massValue > 0
+  const copyFormula = async () => {
+    if (!formula) return
+    try {
+      await navigator.clipboard.writeText(`altitude ≈ ${formula.formula}`)
+      onCopy()
+    } catch {
+      onCopy()
+    }
+  }
+
+  if (!formula) {
+    return (
+      <article className="ballast-card">
+        <div className="ballast-heading">
+          <div className="card-title">
+            <span className="analysis-icon"><Scale size={18} /></span>
+            <h2>Ballast formula</h2>
+          </div>
+          <p>Predicts the altitude of a flight given mass and weather conditions.</p>
+        </div>
+        <div className="empty-chart">
+          <Sparkles size={25} />
+          <b>Need at least 7 flights</b>
+          <span>The weather-aware model trains on your data and is required to build a ballast formula.</span>
+        </div>
+      </article>
+    )
+  }
+
+  const deltaText = result && Math.abs(result.massDelta) >= 0.5
+    ? `${result.massDelta > 0 ? '+' : ''}${formatMass(result.massDelta)} g`
+    : 'On target'
+
+  return (
+    <article className="ballast-card">
+      <div className="ballast-heading">
+        <div className="card-title">
+          <span className="analysis-icon"><Scale size={18} /></span>
+          <h2>Ballast formula</h2>
+        </div>
+        <p>How altitude depends on mass and weather · derived from your last flights</p>
+      </div>
+
+      <div className="ballast-formula-row">
+        <code className="ballast-formula">altitude ≈ {formula.formula}</code>
+        <button className="icon-button" onClick={copyFormula} aria-label="Copy formula"><Copy size={15} /></button>
+      </div>
+
+      <div className="ballast-meta">
+        <div><span>FIT (R²)</span><b>{formatNumber(formula.r2 * 100)}%</b></div>
+        <div><span>MAE</span><b>{formatNumber(formula.mae)} ft</b></div>
+        <div><span>FLIGHTS</span><b>{formula.sampleSize}</b></div>
+      </div>
+
+      <div className="ballast-calculator">
+        <h3>Try a different mass</h3>
+        <div className="ballast-input-row">
+          <label className="form-field">
+            Current rocket mass
+            <div className="input-with-unit">
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={massInput === '' ? '' : massInput}
+                placeholder={String(Math.round(avgMass))}
+                onChange={(event) => setMassInput(event.target.value)}
+              />
+              <span>g</span>
+            </div>
+          </label>
+        </div>
+
+        {validMass && result && (
+          <div className="ballast-result">
+            <div className="ballast-result-row">
+              <span>Predicted altitude at reference weather</span>
+              <strong>{formatNumber(result.predicted)} ft</strong>
+            </div>
+            <div className="ballast-result-row">
+              <span>Mass change to hit target</span>
+              <strong className={result.massDelta > 0 ? 'add' : result.massDelta < 0 ? 'remove' : 'neutral'}>
+                {deltaText}
+              </strong>
+            </div>
+            {Math.abs(result.massDelta) >= 0.5 && (
+              <p className="ballast-helper">
+                {result.massDelta > 0
+                  ? `Add ballast to bring the rocket to ${formatNumber(result.resultMass)} g.`
+                  : `Lighten the rocket to ${formatNumber(result.resultMass)} g.`}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </article>
+  )
 }
 
 export default App
