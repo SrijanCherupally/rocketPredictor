@@ -37,11 +37,6 @@ export type RocketRow = {
   updated_at: string
 }
 
-export type CloudPreferences = {
-  units: 'imperial' | 'metric'
-  targetAltitude: number
-}
-
 export class CloudConflictError extends Error {
   constructor(message = 'This flight changed on another device.') {
     super(message)
@@ -50,6 +45,10 @@ export class CloudConflictError extends Error {
 }
 
 type Client = SupabaseClient
+
+// ---------------------------------------------------------------------------
+// Launch <-> Row mappers
+// ---------------------------------------------------------------------------
 
 export const rowToLaunch = (row: CloudLaunchRow): Launch => ({
   id: row.launch_id,
@@ -66,10 +65,10 @@ export const rowToLaunch = (row: CloudLaunchRow): Launch => ({
   notes: row.notes ?? '',
 })
 
-const launchToRow = (userId: string, launch: Launch, rocketId?: string) => ({
+const launchToRow = (userId: string, launch: Launch, rocketId: string) => ({
   user_id: userId,
   launch_id: launch.id,
-  rocket_id: rocketId ?? null,
+  rocket_id: rocketId,
   date: launch.date,
   altitude: launch.altitude,
   flight_time: launch.flightTime,
@@ -83,64 +82,23 @@ const launchToRow = (userId: string, launch: Launch, rocketId?: string) => ({
   notes: launch.notes ?? '',
 })
 
-export async function fetchWorkspace(client: Client, userId: string) {
-  const [launchResult, preferenceResult] = await Promise.all([
-    client.from('launches').select('*').eq('user_id', userId).order('date', { ascending: true }),
-    client.from('user_preferences').select('*').eq('user_id', userId).maybeSingle(),
-  ])
-  if (launchResult.error) throw launchResult.error
-  if (preferenceResult.error) throw preferenceResult.error
-  const rows = (launchResult.data ?? []) as CloudLaunchRow[]
-  const preference = preferenceResult.data as { units?: 'imperial' | 'metric'; target_altitude?: number } | null
-  return {
-    launches: rows.map(rowToLaunch),
-    versions: Object.fromEntries(rows.map((row) => [row.launch_id, row.version])),
-    preferences: preference
-      ? { units: preference.units ?? 'imperial', targetAltitude: preference.target_altitude ?? 800 }
-      : null,
-  }
-}
-
-export async function importLaunches(client: Client, userId: string, launches: Launch[]) {
-  if (launches.length === 0) return
-  const { error } = await client.from('launches').upsert(launches.map((launch) => launchToRow(userId, launch)), { onConflict: 'user_id,launch_id' })
-  if (error) throw error
-}
-
-export async function createLaunch(client: Client, userId: string, launch: Launch, rocketId?: string) {
-  const { data, error } = await client.from('launches').insert(launchToRow(userId, launch, rocketId)).select('*').single()
-  if (error) throw error
-  return data as CloudLaunchRow
-}
-
-export async function updateLaunch(client: Client, userId: string, launch: Launch, expectedVersion: number) {
-  const { data, error } = await client.from('launches').update({ ...launchToRow(userId, launch), version: expectedVersion + 1 }).eq('user_id', userId).eq('launch_id', launch.id).eq('version', expectedVersion).select('*').maybeSingle()
-  if (error) throw error
-  if (!data) throw new CloudConflictError()
-  return data as CloudLaunchRow
-}
-
-export async function deleteLaunch(client: Client, userId: string, launchId: string, expectedVersion: number) {
-  const { data, error } = await client.from('launches').delete().eq('user_id', userId).eq('launch_id', launchId).eq('version', expectedVersion).select('launch_id').maybeSingle()
-  if (error) throw error
-  if (!data) throw new CloudConflictError()
-}
-
-export async function savePreferences(client: Client, userId: string, preferences: CloudPreferences) {
-  const { error } = await client.from('user_preferences').upsert({ user_id: userId, units: preferences.units, target_altitude: preferences.targetAltitude }, { onConflict: 'user_id' })
-  if (error) throw error
-}
+// ---------------------------------------------------------------------------
+// Rockets
+// ---------------------------------------------------------------------------
 
 export async function fetchRockets(client: Client, userId: string) {
   try {
-    const { data, error } = await client.from('rockets').select('*').eq('user_id', userId).order('created_at', { ascending: true })
+    const { data, error } = await client
+      .from('rockets')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true })
+
     if (error) {
-      // If schema cache error, return empty array (new user)
-      if (error.message?.includes('schema cache')) {
-        return []
-      }
+      if (error.message?.includes('schema cache')) return []
       throw error
     }
+
     return (data ?? []).map((row: RocketRow): Rocket => ({
       id: row.id,
       name: row.name,
@@ -148,7 +106,6 @@ export async function fetchRockets(client: Client, userId: string) {
       createdAt: row.created_at,
     }))
   } catch (err) {
-    // If schema cache error, return empty array and let onboarding handle it
     if (err instanceof Error && err.message?.includes('schema cache')) {
       console.warn('Schema cache error, treating as new user')
       return []
@@ -157,48 +114,185 @@ export async function fetchRockets(client: Client, userId: string) {
   }
 }
 
-export async function createRocket(client: Client, userId: string, name: string, description?: string) {
-  try {
-    const { data, error } = await client.from('rockets').insert({ user_id: userId, name, description: description ?? null }).select('*').single()
-    if (error) throw error
-    const rocket = data as RocketRow
-    // Also create rocket preferences with default target altitude
-    const { error: prefError } = await client.from('rocket_preferences').insert({ rocket_id: rocket.id, target_altitude: 800 })
-    if (prefError) throw prefError
-    return { id: rocket.id, name: rocket.name, description: rocket.description, createdAt: rocket.created_at }
-  } catch (err) {
-    if (err instanceof Error && err.message?.includes('schema cache')) {
-      console.warn('Schema cache error creating rocket, retrying...')
-      // Retry once after a short delay
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      return createRocket(client, userId, name, description)
+export async function createRocket(
+  client: Client,
+  userId: string,
+  name: string,
+  description?: string,
+): Promise<Rocket> {
+  const MAX_RETRIES = 2
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const { data, error } = await client
+        .from('rockets')
+        .insert({ user_id: userId, name, description: description ?? null })
+        .select('*')
+        .single()
+
+      if (error) throw error
+      const rocket = data as RocketRow
+
+      // Rocket preferences (target altitude) live in their own table.
+      const { error: prefError } = await client
+        .from('rocket_preferences')
+        .insert({ rocket_id: rocket.id, target_altitude: 800 })
+
+      if (prefError) throw prefError
+
+      return {
+        id: rocket.id,
+        name: rocket.name,
+        description: rocket.description,
+        createdAt: rocket.created_at,
+      }
+    } catch (err) {
+      if (
+        attempt < MAX_RETRIES - 1 &&
+        err instanceof Error &&
+        err.message?.includes('schema cache')
+      ) {
+        console.warn(`Schema cache error on rocket create, retrying (${attempt + 1})…`)
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+        continue
+      }
+      throw err
     }
-    throw err
+  }
+  // Should not reach here, but satisfy TypeScript
+  throw new Error('createRocket: max retries exceeded')
+}
+
+export async function updateRocket(
+  client: Client,
+  userId: string,
+  rocketId: string,
+  name: string,
+  description?: string,
+): Promise<Rocket> {
+  const { data, error } = await client
+    .from('rockets')
+    .update({ name, description: description ?? null })
+    .eq('id', rocketId)
+    .eq('user_id', userId)
+    .select('*')
+    .single()
+
+  if (error) throw error
+  const rocket = data as RocketRow
+  return {
+    id: rocket.id,
+    name: rocket.name,
+    description: rocket.description,
+    createdAt: rocket.created_at,
   }
 }
 
-export async function updateRocket(client: Client, userId: string, rocketId: string, name: string, description?: string) {
-  const { data, error } = await client.from('rockets').update({ name, description: description ?? null }).eq('id', rocketId).eq('user_id', userId).select('*').single()
+export async function deleteRocket(
+  client: Client,
+  userId: string,
+  rocketId: string,
+): Promise<void> {
+  // Cascade delete removes rocket_preferences and all associated launches.
+  const { error } = await client
+    .from('rockets')
+    .delete()
+    .eq('id', rocketId)
+    .eq('user_id', userId)
+
   if (error) throw error
-  const rocket = data as RocketRow
-  return { id: rocket.id, name: rocket.name, description: rocket.description, createdAt: rocket.created_at }
 }
 
-export async function deleteRocket(client: Client, userId: string, rocketId: string) {
-  // Cascade delete will remove rocket_preferences and associated launches via ON DELETE CASCADE
-  const { error } = await client.from('rockets').delete().eq('id', rocketId).eq('user_id', userId)
+// ---------------------------------------------------------------------------
+// Rocket preferences
+// ---------------------------------------------------------------------------
+
+export async function fetchRocketPreferences(
+  client: Client,
+  rocketId: string,
+): Promise<{ targetAltitude: number }> {
+  const { data, error } = await client
+    .from('rocket_preferences')
+    .select('target_altitude')
+    .eq('rocket_id', rocketId)
+    .maybeSingle()
+
+  if (error) throw error
+  return { targetAltitude: data?.target_altitude ?? 800 }
+}
+
+export async function saveRocketPreferences(
+  client: Client,
+  rocketId: string,
+  targetAltitude: number,
+): Promise<void> {
+  const { error } = await client
+    .from('rocket_preferences')
+    .upsert({ rocket_id: rocketId, target_altitude: targetAltitude }, { onConflict: 'rocket_id' })
+
   if (error) throw error
 }
 
-export async function fetchRocketData(client: Client, userId: string, rocketId: string) {
+// ---------------------------------------------------------------------------
+// User preferences (global — units only)
+// ---------------------------------------------------------------------------
+
+export async function saveUserPreferences(
+  client: Client,
+  userId: string,
+  units: 'imperial' | 'metric',
+): Promise<void> {
+  const { error } = await client
+    .from('user_preferences')
+    .upsert({ user_id: userId, units }, { onConflict: 'user_id' })
+
+  if (error) throw error
+}
+
+export async function fetchUserPreferences(
+  client: Client,
+  userId: string,
+): Promise<{ units: 'imperial' | 'metric' } | null> {
+  const { data, error } = await client
+    .from('user_preferences')
+    .select('units')
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+  return { units: data.units ?? 'imperial' }
+}
+
+// ---------------------------------------------------------------------------
+// Rocket data (launches + preferences for one rocket)
+// ---------------------------------------------------------------------------
+
+export async function fetchRocketData(
+  client: Client,
+  userId: string,
+  rocketId: string,
+) {
   const [launchResult, prefResult] = await Promise.all([
-    client.from('launches').select('*').eq('user_id', userId).eq('rocket_id', rocketId).order('date', { ascending: true }),
-    client.from('rocket_preferences').select('*').eq('rocket_id', rocketId).maybeSingle(),
+    client
+      .from('launches')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('rocket_id', rocketId)
+      .order('date', { ascending: true }),
+
+    client
+      .from('rocket_preferences')
+      .select('target_altitude')
+      .eq('rocket_id', rocketId)
+      .maybeSingle(),
   ])
+
   if (launchResult.error) throw launchResult.error
   if (prefResult.error) throw prefResult.error
+
   const rows = (launchResult.data ?? []) as CloudLaunchRow[]
   const prefs = prefResult.data as { target_altitude?: number } | null
+
   return {
     launches: rows.map(rowToLaunch),
     versions: Object.fromEntries(rows.map((row) => [row.launch_id, row.version])),
@@ -206,27 +300,129 @@ export async function fetchRocketData(client: Client, userId: string, rocketId: 
   }
 }
 
-export async function saveRocketPreferences(client: Client, rocketId: string, targetAltitude: number) {
-  const { error } = await client.from('rocket_preferences').upsert({ rocket_id: rocketId, target_altitude: targetAltitude }, { onConflict: 'rocket_id' })
+// ---------------------------------------------------------------------------
+// Legacy launches (rocket_id IS NULL — pre-rockets user)
+// ---------------------------------------------------------------------------
+
+/**
+ * Finds launches belonging to a user that are not yet assigned to any rocket.
+ * These are legacy launches from before the rockets feature was added.
+ */
+export async function fetchLegacyLaunches(
+  client: Client,
+  userId: string,
+): Promise<Launch[]> {
+  const { data, error } = await client
+    .from('launches')
+    .select('*')
+    .eq('user_id', userId)
+    .is('rocket_id', null)
+    .order('date', { ascending: true })
+
+  if (error) throw error
+  return (data as CloudLaunchRow[]).map(rowToLaunch)
+}
+
+/**
+ * Re-assigns a batch of legacy launches to a rocket.
+ */
+export async function assignLaunchesToRocket(
+  client: Client,
+  userId: string,
+  launchIds: string[],
+  rocketId: string,
+): Promise<void> {
+  if (launchIds.length === 0) return
+
+  const { error } = await client
+    .from('launches')
+    .update({ rocket_id: rocketId })
+    .eq('user_id', userId)
+    .in('launch_id', launchIds)
+
   if (error) throw error
 }
 
-export async function createLaunchForRocket(client: Client, userId: string, launch: Launch, rocketId: string) {
-  const { data, error } = await client.from('launches').insert(launchToRow(userId, launch, rocketId)).select('*').single()
+// ---------------------------------------------------------------------------
+// Launches (all require a rocket)
+// ---------------------------------------------------------------------------
+
+export async function createLaunch(
+  client: Client,
+  userId: string,
+  launch: Launch,
+  rocketId: string,
+): Promise<CloudLaunchRow> {
+  const { data, error } = await client
+    .from('launches')
+    .insert(launchToRow(userId, launch, rocketId))
+    .select('*')
+    .single()
+
   if (error) throw error
   return data as CloudLaunchRow
 }
 
-export async function updateLaunchForRocket(client: Client, userId: string, launch: Launch, rocketId: string, expectedVersion: number) {
-  const { data, error } = await client.from('launches').update({ ...launchToRow(userId, launch, rocketId), version: expectedVersion + 1 }).eq('user_id', userId).eq('launch_id', launch.id).eq('rocket_id', rocketId).eq('version', expectedVersion).select('*').maybeSingle()
+export async function updateLaunch(
+  client: Client,
+  userId: string,
+  launch: Launch,
+  rocketId: string,
+  expectedVersion: number,
+): Promise<CloudLaunchRow> {
+  const { data, error } = await client
+    .from('launches')
+    .update({ ...launchToRow(userId, launch, rocketId), version: expectedVersion + 1 })
+    .eq('user_id', userId)
+    .eq('launch_id', launch.id)
+    .eq('rocket_id', rocketId)
+    .eq('version', expectedVersion)
+    .select('*')
+    .maybeSingle()
+
   if (error) throw error
   if (!data) throw new CloudConflictError()
   return data as CloudLaunchRow
 }
 
-export async function deleteLaunchForRocket(client: Client, userId: string, launchId: string, rocketId: string, expectedVersion: number) {
-  const { data, error } = await client.from('launches').delete().eq('user_id', userId).eq('launch_id', launchId).eq('rocket_id', rocketId).eq('version', expectedVersion).select('launch_id').maybeSingle()
+export async function deleteLaunch(
+  client: Client,
+  userId: string,
+  launchId: string,
+  rocketId: string,
+  expectedVersion: number,
+): Promise<void> {
+  const { data, error } = await client
+    .from('launches')
+    .delete()
+    .eq('user_id', userId)
+    .eq('launch_id', launchId)
+    .eq('rocket_id', rocketId)
+    .eq('version', expectedVersion)
+    .select('launch_id')
+    .maybeSingle()
+
   if (error) throw error
   if (!data) throw new CloudConflictError()
 }
 
+// ---------------------------------------------------------------------------
+// Local → Cloud import (requires a rocket)
+// ---------------------------------------------------------------------------
+
+export async function importLaunches(
+  client: Client,
+  userId: string,
+  launches: Launch[],
+  rocketId: string,
+): Promise<void> {
+  if (launches.length === 0) return
+
+  const { error } = await client
+    .from('launches')
+    .upsert(launches.map((launch) => launchToRow(userId, launch, rocketId)), {
+      onConflict: 'user_id,launch_id',
+    })
+
+  if (error) throw error
+}

@@ -108,3 +108,106 @@ export function adjustedAltitude(launch: Launch, model: Model, reference: { wind
   const referenceWeather = windCoefficient * reference.wind + pressureCoefficient * reference.pressure + humidityCoefficient * reference.humidity
   return launch.altitude - observedWeather + referenceWeather
 }
+
+// ---------------------------------------------------------------------------
+// Ballast formula
+// ---------------------------------------------------------------------------
+
+const fmt = (n: number, d = 4) => {
+  if (n === 0) return '0'
+  const abs = Math.abs(n)
+  const decimals = abs >= 100 ? 1 : abs >= 10 ? 2 : abs >= 1 ? 3 : d
+  return Number(n.toFixed(decimals)).toString()
+}
+
+/**
+ * Generates a human-readable formula string for the adjusted regression model.
+ * Returns null when the model is not ready.
+ */
+export function buildBallastFormula(
+  model: Model,
+  reference: { wind: number; pressure: number; humidity: number },
+) {
+  if (!model || model.coefficients.length < 4) return null
+
+  const [massCoef, windCoef, pressureCoef, humidityCoef] = model.coefficients
+  if (Math.abs(massCoef) < 1e-8) return null
+
+  const terms: string[] = []
+
+  // Intercept
+  if (Math.abs(model.intercept) > 1e-6) {
+    terms.push(fmt(model.intercept))
+  }
+
+  // Mass term
+  if (Math.abs(massCoef) > 1e-6) {
+    terms.push(massCoef < 0
+      ? `${fmt(massCoef)} · mass`
+      : `+ ${fmt(massCoef)} · mass`)
+  }
+
+  // Wind term
+  if (Math.abs(windCoef) > 1e-6) {
+    terms.push(windCoef < 0
+      ? `${fmt(windCoef)} · wind`
+      : `+ ${fmt(windCoef)} · wind`)
+  }
+
+  // Pressure term
+  if (Math.abs(pressureCoef) > 1e-6) {
+    terms.push(pressureCoef < 0
+      ? `${fmt(pressureCoef)} · pressure`
+      : `+ ${fmt(pressureCoef)} · pressure`)
+  }
+
+  // Humidity term
+  if (Math.abs(humidityCoef) > 1e-6) {
+    terms.push(humidityCoef < 0
+      ? `${fmt(humidityCoef)} · humidity`
+      : `+ ${fmt(humidityCoef)} · humidity`)
+  }
+
+  const formula = terms.length > 0 ? terms.join(' ') : '0'
+
+  return {
+    formula,
+    intercept: model.intercept,
+    massCoef,
+    windCoef,
+    pressureCoef,
+    humidityCoef,
+    r2: model.r2,
+    mae: model.mae,
+    sampleSize: model.sampleSize,
+    reference,
+  }
+}
+
+export type BallastFormula = NonNullable<ReturnType<typeof buildBallastFormula>>
+
+/**
+ * Given the adjusted model, reference weather, and current rocket mass,
+ * predict altitude and compute how much mass to add/remove to hit a target.
+ */
+export function computeBallast(
+  formula: BallastFormula,
+  currentMass: number,
+  targetAltitude: number,
+): { predicted: number; massDelta: number; resultMass: number } {
+  const { massCoef } = formula
+  if (Math.abs(massCoef) < 1e-8) {
+    return { predicted: 0, massDelta: 0, resultMass: currentMass }
+  }
+  const predicted = formula.intercept
+    + massCoef * currentMass
+    + formula.windCoef * formula.reference.wind
+    + formula.pressureCoef * formula.reference.pressure
+    + formula.humidityCoef * formula.reference.humidity
+  const massDelta = (targetAltitude - predicted) / massCoef
+  return {
+    predicted,
+    massDelta,
+    resultMass: currentMass + massDelta,
+  }
+}
