@@ -68,7 +68,7 @@ function solve(matrix: number[][], output: number[]): number[] | null {
 }
 
 export function adjustedRegression(launches: Launch[]): Model | null {
-  if (launches.length < 7) return null
+  if (launches.length < 4) return null
   const features = launches.map((launch) => [1, totalMass(launch), launch.windSpeed, launch.airPressure, launch.humidity])
   const target = launches.map((launch) => launch.altitude)
   const columns = features[0].length

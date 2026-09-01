@@ -176,14 +176,14 @@ function App() {
   const graphBounds = useMemo(() => {
     const dates = launches.map((launch) => new Date(`${launch.date}T12:00:00`).getTime())
     const masses = launches.map(totalMass)
-    return { minMass: Math.min(...masses, 0), maxMass: Math.max(...masses, 1000), minDate: Math.min(...dates, 0), maxDate: Math.max(...dates, 1) }
+    return { minMass: Math.min(...masses, 0), maxMass: Math.max(...masses, 1000), minDate: dates.length ? Math.min(...dates) : Date.now(), maxDate: dates.length ? Math.max(...dates) : Date.now() }
   }, [launches])
   const selectedMassWindow = massWindow ?? [graphBounds.minMass, graphBounds.maxMass]
   const selectedDateWindow = dateWindow ?? [graphBounds.minDate, graphBounds.maxDate]
   const graphLaunches = useMemo(() => launches.filter((launch) => { const date = new Date(`${launch.date}T12:00:00`).getTime(); return date >= selectedDateWindow[0] && date <= selectedDateWindow[1] }), [launches, selectedDateWindow])
-  const rawModel = useMemo(() => linearRegression(launches.map((launch) => ({ x: totalMass(launch), y: launch.altitude }))), [launches])
-  const adjustedModel = useMemo(() => adjustedRegression(launches), [launches])
-  const reference = useMemo(() => ({ wind: median(launches.map((launch) => launch.windSpeed)), pressure: median(launches.map((launch) => launch.airPressure)), humidity: median(launches.map((launch) => launch.humidity)) }), [launches])
+  const rawModel = useMemo(() => linearRegression(graphLaunches.map((launch) => ({ x: totalMass(launch), y: launch.altitude }))), [graphLaunches])
+  const adjustedModel = useMemo(() => adjustedRegression(graphLaunches), [graphLaunches])
+  const reference = useMemo(() => ({ wind: median(graphLaunches.map((launch) => launch.windSpeed)), pressure: median(graphLaunches.map((launch) => launch.airPressure)), humidity: median(graphLaunches.map((launch) => launch.humidity)) }), [graphLaunches])
   const rawRecommendation = rawModel && Math.abs(rawModel.coefficients[0]) > 0.01 ? (targetAltitude - rawModel.intercept) / rawModel.coefficients[0] : null
   const adjustedRecommendation = adjustedModel && Math.abs(adjustedModel.coefficients[0]) > 0.01 ? (targetAltitude - adjustedModel.intercept - adjustedModel.coefficients[1] * reference.wind - adjustedModel.coefficients[2] * reference.pressure - adjustedModel.coefficients[3] * reference.humidity) / adjustedModel.coefficients[0] : null
   const rawChart = useMemo(() => graphLaunches.map((launch) => ({ ...launch, mass: totalMass(launch), fitted: rawModel ? rawModel.intercept + rawModel.coefficients[0] * totalMass(launch) : 0 })).sort((a, b) => a.mass - b.mass), [graphLaunches, rawModel])
