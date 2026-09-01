@@ -77,7 +77,8 @@ export type DescentConditions = {
   pressure: number
   humidity: number
   temperature: number
-  flightTime: number
+  /** Legacy display-only value; never used by the descent model. */
+  flightTime?: number
 }
 
 export type DescentModel = Model & {
@@ -93,7 +94,6 @@ const descentFeatures = (conditions: DescentConditions) => [
   conditions.pressure,
   conditions.humidity,
   conditions.temperature,
-  conditions.flightTime,
 ]
 
 /**
@@ -106,7 +106,7 @@ export function descentRegression(launches: Launch[]): DescentModel | null {
   const rawFeatures = launches.map((launch) => descentFeatures({
     mass: totalMass(launch), altitude: launch.altitude, parachuteSize: launch.parachuteSize,
     wind: launch.windSpeed, pressure: launch.airPressure, humidity: launch.humidity,
-    temperature: launch.temperature, flightTime: launch.flightTime,
+    temperature: launch.temperature,
   }))
   const columns = rawFeatures[0].length
   const means = Array.from({ length: columns }, (_, column) => rawFeatures.reduce((sum, row) => sum + row[column], 0) / rawFeatures.length)
