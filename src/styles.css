@@ -182,3 +182,48 @@ nav { display: grid; gap: 4px; } nav button, .sidebar-bottom > button { border: 
 .local-badge { color: var(--color-status-warning); border-color: var(--color-border-muted); background: var(--color-bg-tertiary); }
 .cloud-error { border-color: var(--color-border-muted); }
 @media (max-width: 760px) { .impact-field small { margin-top: 4px; } }
+
+/* Improve readability on phones without changing the desktop density. */
+@media (max-width: 760px) {
+  .subtitle,
+  .card-heading p,
+  .section-heading p,
+  .settings-card p,
+  .simulator-heading p:not(.eyebrow),
+  .ballast-helper,
+  .auth-copy { font-size: 14px; line-height: 1.5; }
+
+  .eyebrow,
+  .stat-top,
+  .footer-label,
+  .model-stat span,
+  .simulator-badge,
+  .settings-card label,
+  .form-field,
+  .simulator-inputs label { font-size: 12px; }
+
+  .stat-note,
+  .descent-legend,
+  .chart-tooltip,
+  .flight-table,
+  .settings-card p,
+  .target-banner span,
+  .target-banner > button,
+  .text-button,
+  .simulator-result > span:not(.footer-label),
+  .ballast-meta span { font-size: 12px; }
+
+  .flight-table { min-height: 62px; }
+  .date-cell b,
+  .flight-table strong { font-size: 13px; }
+  .date-cell small,
+  .status { font-size: 11px; }
+  .simulator-input input,
+  .input-with-unit input,
+  .auth-form input { font-size: 16px; }
+  .simulator-input span,
+  .input-with-unit span { font-size: 12px; }
+  .primary-button,
+  .secondary-button,
+  .unit-select { font-size: 14px; }
+}
