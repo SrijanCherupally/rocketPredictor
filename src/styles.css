@@ -149,6 +149,7 @@ nav { display: grid; gap: 4px; } nav button, .sidebar-bottom > button { border: 
 .simulator-body { display: grid; grid-template-columns: 1.7fr 1fr; gap: 22px; align-items: stretch; margin-top: 19px; }
 .simulator-inputs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 11px; }
 .simulator-inputs label { color: var(--color-text-muted); font: 8px 'DM Mono'; letter-spacing: .55px; }
+.impact-field small { display: block; margin-top: 5px; color: var(--color-accent-primary); font: 8px 'DM Sans'; letter-spacing: 0; }
 .simulator-input { height: 38px; display: flex; align-items: center; overflow: hidden; margin-top: 7px; border: 1px solid var(--color-border-muted); border-radius: 7px; background: var(--color-bg-secondary); transition: border-color .16s ease, box-shadow .16s ease; }
 .simulator-input:focus-within { border-color: var(--color-accent-primary); box-shadow: 0 0 0 3px var(--color-accent-light-blue); }
 .simulator-input input { width: 100%; min-width: 0; height: 100%; border: 0; outline: 0; padding: 0 9px; color: var(--color-text-primary); background: transparent; font-size: 12px; }

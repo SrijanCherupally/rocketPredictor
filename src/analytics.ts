@@ -141,6 +141,16 @@ export function predictDescentTime(model: DescentModel, conditions: DescentCondi
   return model.intercept + descentFeatures(conditions).reduce((sum, value, index) => sum + model.coefficients[index] * ((value - model.means[index]) / model.scales[index]), 0)
 }
 
+/** Returns a 1–100 confidence score for each variable's learned impact. */
+export function variableImpactConfidence(model: Model | null, featureRows: number[][], alreadyStandardized = false) {
+  if (!model) return []
+  const deviations = model.coefficients.map((_, column) => alreadyStandardized ? 1 : Math.sqrt(featureRows.reduce((sum, row) => sum + (row[column] - (featureRows.reduce((total, value) => total + value[column], 0) / Math.max(1, featureRows.length))) ** 2, 0) / Math.max(1, featureRows.length)))
+  const effects = model.coefficients.map((coefficient, index) => Math.abs(coefficient * deviations[index]))
+  const strongest = Math.max(...effects, 1e-8)
+  const reliability = Math.min(1, model.sampleSize / 12) * (0.35 + 0.65 * Math.sqrt(Math.max(0, model.r2)))
+  return effects.map((effect) => Math.max(1, Math.min(100, Math.round((25 + 75 * effect / strongest) * reliability))))
+}
+
 export function adjustedRegression(launches: Launch[]): Model | null {
   if (launches.length < 4) return null
   const features = launches.map((launch) => [1, totalMass(launch), launch.windSpeed, launch.airPressure, launch.humidity, launch.temperature])
