@@ -219,6 +219,51 @@ export function optimalRocketMass(model: Model | null, targetAltitude: number, w
 }
 
 // ---------------------------------------------------------------------------
+// Insight helpers — pure, local statistics derived from the flight log.
+// ---------------------------------------------------------------------------
+
+export const mean = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+export const standardDeviation = (values: number[]) => values.length > 1 ? Math.sqrt(mean(values.map((value) => (value - mean(values)) ** 2))) : 0
+
+export function movingAverage(values: number[], window = 3) {
+  return values.map((_, index) => mean(values.slice(Math.max(0, index - window + 1), index + 1)))
+}
+
+export type Trend = { slope: number; intercept: number; r2: number }
+export function simpleTrend(points: Array<{ x: number; y: number }>): Trend | null {
+  const valid = points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+  if (valid.length < 3 || new Set(valid.map((point) => point.x)).size < 3) return null
+  const model = linearRegression(valid)
+  return model ? { slope: model.coefficients[0], intercept: model.intercept, r2: model.r2 } : null
+}
+
+export type ResidualDiagnostic = { launch: Launch; predicted: number; residual: number; review: 'high' | 'low' | null }
+export function residualDiagnostics(launches: Launch[], model: Model): { rows: ResidualDiagnostic[]; mean: number; standardDeviation: number; upperControl: number; lowerControl: number } {
+  const base = launches.map((launch) => ({ launch, predicted: predictAdjustedAltitude(model, totalMass(launch), { wind: launch.windSpeed, pressure: launch.airPressure, humidity: launch.humidity, temperature: launch.temperature }) }))
+  const residuals = base.map((row) => row.launch.altitude - row.predicted)
+  const average = mean(residuals); const spread = standardDeviation(residuals); const upperControl = average + 2 * spread; const lowerControl = average - 2 * spread
+  return { mean: average, standardDeviation: spread, upperControl, lowerControl, rows: base.map((row, index) => ({ ...row, residual: residuals[index], review: residuals[index] > upperControl ? 'high' : residuals[index] < lowerControl ? 'low' : null })) }
+}
+
+export type ConfigurationGroup = { label: string; count: number; averageAltitude: number; altitudeSpread: number; averageDescent: number; targetHitRate: number }
+export function configurationGroups(launches: Launch[], targetAltitude: number): ConfigurationGroup[] {
+  const grouped = new Map<string, Launch[]>()
+  launches.forEach((launch) => { const mass = Math.round(totalMass(launch) / 10) * 10; const key = `${mass} g / ${launch.parachuteSize.toFixed(1)} in`; grouped.set(key, [...(grouped.get(key) ?? []), launch]) })
+  return [...grouped.entries()].map(([label, records]) => ({ label, count: records.length, averageAltitude: mean(records.map((record) => record.altitude)), altitudeSpread: standardDeviation(records.map((record) => record.altitude)), averageDescent: mean(records.map((record) => record.descentTime)), targetHitRate: records.filter((record) => Math.abs(record.altitude - targetAltitude) <= 20).length / records.length })).sort((a, b) => b.count - a.count || a.altitudeSpread - b.altitudeSpread)
+}
+
+export type ExperimentSuggestion = { field: 'mass' | 'parachute' | 'wind' | 'temperature'; direction: 'lower' | 'higher'; value: number; observedMin: number; observedMax: number }
+export function nextExperiment(launches: Launch[]): ExperimentSuggestion | null {
+  if (launches.length < 4) return null
+  const dimensions: Array<{ field: ExperimentSuggestion['field']; values: number[]; step: number }> = [
+    { field: 'mass', values: launches.map(totalMass), step: 10 }, { field: 'parachute', values: launches.map((launch) => launch.parachuteSize), step: 1 }, { field: 'wind', values: launches.map((launch) => launch.windSpeed), step: 1 }, { field: 'temperature', values: launches.map((launch) => launch.temperature), step: 5 },
+  ]
+  const scored = dimensions.map((dimension) => { const min = Math.min(...dimension.values); const max = Math.max(...dimension.values); const spread = max - min; return { ...dimension, min, max, spread } }).sort((a, b) => a.spread - b.spread)[0]
+  const direction: ExperimentSuggestion['direction'] = scored.min > 0 && scored.min / Math.max(scored.max, 1) > .72 ? 'lower' : 'higher'
+  return { field: scored.field, direction, value: direction === 'lower' ? Math.max(0, scored.min - scored.step) : scored.max + scored.step, observedMin: scored.min, observedMax: scored.max }
+}
+
+// ---------------------------------------------------------------------------
 // Ballast formula
 // ---------------------------------------------------------------------------
 
