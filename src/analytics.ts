@@ -69,6 +69,78 @@ function solve(matrix: number[][], output: number[]): number[] | null {
 
 export type WeatherReference = { wind: number; pressure: number; humidity: number; temperature: number }
 
+export type DescentConditions = {
+  mass: number
+  altitude: number
+  parachuteSize: number
+  wind: number
+  pressure: number
+  humidity: number
+  temperature: number
+  flightTime: number
+}
+
+export type DescentModel = Model & {
+  means: number[]
+  scales: number[]
+}
+
+const descentFeatures = (conditions: DescentConditions) => [
+  conditions.mass,
+  conditions.altitude,
+  conditions.parachuteSize,
+  conditions.wind,
+  conditions.pressure,
+  conditions.humidity,
+  conditions.temperature,
+  conditions.flightTime,
+]
+
+/**
+ * Ridge regression for descent time. Inputs are standardized before fitting so
+ * that weather, mass, altitude, and parachute dimensions can learn together.
+ * Rebuilding from the flight log makes each newly saved flight part of the model.
+ */
+export function descentRegression(launches: Launch[]): DescentModel | null {
+  if (launches.length < 4) return null
+  const rawFeatures = launches.map((launch) => descentFeatures({
+    mass: totalMass(launch), altitude: launch.altitude, parachuteSize: launch.parachuteSize,
+    wind: launch.windSpeed, pressure: launch.airPressure, humidity: launch.humidity,
+    temperature: launch.temperature, flightTime: launch.flightTime,
+  }))
+  const columns = rawFeatures[0].length
+  const means = Array.from({ length: columns }, (_, column) => rawFeatures.reduce((sum, row) => sum + row[column], 0) / rawFeatures.length)
+  const scales = Array.from({ length: columns }, (_, column) => Math.max(1e-6, Math.sqrt(rawFeatures.reduce((sum, row) => sum + (row[column] - means[column]) ** 2, 0) / rawFeatures.length)))
+  const features = rawFeatures.map((row) => [1, ...row.map((value, column) => (value - means[column]) / scales[column])])
+  const target = launches.map((launch) => launch.descentTime)
+  const normalMatrix = Array.from({ length: columns + 1 }, () => Array(columns + 1).fill(0))
+  const normalOutput = Array(columns + 1).fill(0)
+  features.forEach((row, rowIndex) => {
+    for (let i = 0; i < row.length; i += 1) {
+      normalOutput[i] += row[i] * target[rowIndex]
+      for (let j = 0; j < row.length; j += 1) normalMatrix[i][j] += row[i] * row[j]
+    }
+  })
+  // A modest ridge penalty keeps the prediction stable with a small flight log.
+  for (let i = 1; i < normalMatrix.length; i += 1) normalMatrix[i][i] += 1
+  const values = solve(normalMatrix, normalOutput)
+  if (!values) return null
+  const predictions = features.map((row) => row.reduce((sum, value, index) => sum + value * values[index], 0))
+  const mean = target.reduce((sum, value) => sum + value, 0) / target.length
+  const residual = target.reduce((sum, value, index) => sum + (value - predictions[index]) ** 2, 0)
+  const variance = target.reduce((sum, value) => sum + (value - mean) ** 2, 0)
+  return {
+    intercept: values[0], coefficients: values.slice(1), means, scales,
+    r2: variance === 0 ? 0 : Math.max(0, 1 - residual / variance),
+    mae: target.reduce((sum, value, index) => sum + Math.abs(value - predictions[index]), 0) / target.length,
+    sampleSize: launches.length,
+  }
+}
+
+export function predictDescentTime(model: DescentModel, conditions: DescentConditions) {
+  return model.intercept + descentFeatures(conditions).reduce((sum, value, index) => sum + model.coefficients[index] * ((value - model.means[index]) / model.scales[index]), 0)
+}
+
 export function adjustedRegression(launches: Launch[]): Model | null {
   if (launches.length < 4) return null
   const features = launches.map((launch) => [1, totalMass(launch), launch.windSpeed, launch.airPressure, launch.humidity, launch.temperature])
