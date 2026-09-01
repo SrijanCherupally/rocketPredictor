@@ -151,6 +151,20 @@ export function variableImpactConfidence(model: Model | null, featureRows: numbe
   return effects.map((effect) => Math.max(1, Math.min(100, Math.round((25 + 75 * effect / strongest) * reliability))))
 }
 
+/** Returns each variable's relative contribution to the trained model, totaling 100%. */
+export function variableWeights(model: Model | null, featureRows: number[][], alreadyStandardized = false) {
+  if (!model) return []
+  const deviations = model.coefficients.map((_, column) => alreadyStandardized ? 1 : Math.sqrt(featureRows.reduce((sum, row) => sum + (row[column] - (featureRows.reduce((total, value) => total + value[column], 0) / Math.max(1, featureRows.length))) ** 2, 0) / Math.max(1, featureRows.length)))
+  const effects = model.coefficients.map((coefficient, index) => Math.abs(coefficient * deviations[index]))
+  const totalEffect = effects.reduce((sum, effect) => sum + effect, 0)
+  if (totalEffect <= 1e-8) return effects.map(() => 0)
+  const exactWeights = effects.map((effect) => 100 * effect / totalEffect)
+  const weights = exactWeights.map(Math.floor)
+  const remaining = 100 - weights.reduce((sum, weight) => sum + weight, 0)
+  exactWeights.map((weight, index) => ({ index, remainder: weight - weights[index] })).sort((a, b) => b.remainder - a.remainder).slice(0, remaining).forEach(({ index }) => { weights[index] += 1 })
+  return weights
+}
+
 export function adjustedRegression(launches: Launch[]): Model | null {
   if (launches.length < 4) return null
   const features = launches.map((launch) => [1, totalMass(launch), launch.windSpeed, launch.airPressure, launch.humidity, launch.temperature])

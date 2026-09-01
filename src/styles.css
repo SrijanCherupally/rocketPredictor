@@ -171,6 +171,7 @@ nav { display: grid; gap: 4px; } nav button, .sidebar-bottom > button { border: 
 .chart-tooltip, .flight-table, .settings-card label, .form-field, .auth-form label,
 .ballast-meta span, .footer-label, .model-stat span, .simulator-badge { font-size: 10px; }
 .chart-zoom-hint, .impact-field small { font-size: 10px; line-height: 1.35; }
+.impact-field .variable-weight { color: var(--color-text-muted); }
 .simulator-inputs label { font-size: 10px; }
 .simulator-input span { font-size: 10px; }
 .model-footer { gap: 8px; }
