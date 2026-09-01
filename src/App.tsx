@@ -67,8 +67,8 @@ function App() {
     try { return (localStorage.getItem(PREF_KEY) as Units) ?? 'imperial' } catch { return 'imperial' }
   })
   const [targetAltitude, setTargetAltitude] = useState(800)
-  const [massWindow, setMassWindow] = useState<[number, number] | null>(null)
   const [dateWindow, setDateWindow] = useState<[number, number] | null>(null)
+  const [massWindow, setMassWindow] = useState<[number, number] | null>(null)
   const [form, setForm] = useState<FormValues>(emptyForm)
   const [rocketMassInput, setRocketMassInput] = useState(String(emptyForm.rocketMass))
   const [showForm, setShowForm] = useState(false)
@@ -174,15 +174,15 @@ function App() {
   }, [session])
 
   const graphBounds = useMemo(() => {
-    const masses = launches.map(totalMass)
     const dates = launches.map((launch) => new Date(`${launch.date}T12:00:00`).getTime())
+    const masses = launches.map(totalMass)
     return { minMass: Math.min(...masses, 0), maxMass: Math.max(...masses, 1000), minDate: Math.min(...dates, 0), maxDate: Math.max(...dates, 1) }
   }, [launches])
   const selectedMassWindow = massWindow ?? [graphBounds.minMass, graphBounds.maxMass]
   const selectedDateWindow = dateWindow ?? [graphBounds.minDate, graphBounds.maxDate]
-  const graphLaunches = useMemo(() => launches.filter((launch) => { const mass = totalMass(launch); const date = new Date(`${launch.date}T12:00:00`).getTime(); return mass >= selectedMassWindow[0] && mass <= selectedMassWindow[1] && date >= selectedDateWindow[0] && date <= selectedDateWindow[1] }), [launches, selectedMassWindow, selectedDateWindow])
-  const rawModel = useMemo(() => linearRegression(graphLaunches.map((launch) => ({ x: totalMass(launch), y: launch.altitude }))), [graphLaunches])
-  const adjustedModel = useMemo(() => adjustedRegression(graphLaunches), [graphLaunches])
+  const graphLaunches = useMemo(() => launches.filter((launch) => { const date = new Date(`${launch.date}T12:00:00`).getTime(); return date >= selectedDateWindow[0] && date <= selectedDateWindow[1] }), [launches, selectedDateWindow])
+  const rawModel = useMemo(() => linearRegression(launches.map((launch) => ({ x: totalMass(launch), y: launch.altitude }))), [launches])
+  const adjustedModel = useMemo(() => adjustedRegression(launches), [launches])
   const reference = useMemo(() => ({ wind: median(launches.map((launch) => launch.windSpeed)), pressure: median(launches.map((launch) => launch.airPressure)), humidity: median(launches.map((launch) => launch.humidity)) }), [launches])
   const rawRecommendation = rawModel && Math.abs(rawModel.coefficients[0]) > 0.01 ? (targetAltitude - rawModel.intercept) / rawModel.coefficients[0] : null
   const adjustedRecommendation = adjustedModel && Math.abs(adjustedModel.coefficients[0]) > 0.01 ? (targetAltitude - adjustedModel.intercept - adjustedModel.coefficients[1] * reference.wind - adjustedModel.coefficients[2] * reference.pressure - adjustedModel.coefficients[3] * reference.humidity) / adjustedModel.coefficients[0] : null
@@ -361,6 +361,7 @@ function App() {
       </aside>
       {mobileNav && <button className="sidebar-scrim" onClick={() => setMobileNav(false)} aria-label="Close navigation" />}
       <main className="main-content">
+        <style>{`.graph-filters { max-width: 1346px; width: calc(100% - 94px); margin: 18px auto 0; padding: 14px 18px; display: flex; align-items: center; gap: 24px; background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: 10px; box-shadow: 0 2px 5px var(--color-modal-shadow); } .graph-filters > label:first-of-type { display: none; } .graph-filters > div { display: grid; gap: 4px; min-width: 190px; } .graph-filters > div span { color: var(--color-text-muted); font: 8px 'DM Mono'; letter-spacing: .7px; } .graph-filters > div strong { color: var(--color-text-primary); font-size: 13px; } .graph-filters label { flex: 1; display: grid; gap: 7px; color: var(--color-text-secondary); font-size: 11px; } .graph-filters label b { color: var(--color-text-primary); font-size: 12px; } .graph-filters input[type=range] { width: 100%; accent-color: #3478f6; cursor: grab; } .graph-filters input[type=range]:active { cursor: grabbing; } @media (max-width: 760px) { .graph-filters { width: calc(100% - 36px); align-items: stretch; flex-direction: column; gap: 12px; } }`}</style>
         <header className="topbar"><button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="Open navigation"><Menu size={20} /></button><div className="breadcrumbs"><span>Workspace</span><span>/</span><b>{activeSection === 'overview' ? 'Overview' : activeSection === 'flights' ? 'Flights' : 'Settings'}</b></div><div className="top-actions"><button className="unit-select" onClick={() => changeUnits(units === 'imperial' ? 'metric' : 'imperial')}><span className="unit-dot" /> {units === 'imperial' ? 'Imperial' : 'Metric'} <ChevronDown size={14} /></button><button className="icon-button" onClick={() => setToast(syncStatus)} aria-label="Sync status"><Bell size={16} /></button>{session ? <button className="avatar small" onClick={signOut} aria-label="Sign out">{session.user.email?.slice(0, 2).toUpperCase() ?? 'RT'}</button> : <span className="local-badge">LOCAL</span>}</div></header>
         {cloudError && <div className="cloud-error"><span>{cloudError}</span><button onClick={() => setCloudError('')} aria-label="Dismiss cloud error"><X size={15} /></button></div>}
         {session && <div className={`sync-banner ${cloudLoading ? 'syncing' : ''}`}><span className="sync-dot" /> {syncStatus}<span>{session.user.email}</span></div>}
