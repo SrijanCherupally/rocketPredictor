@@ -67,9 +67,11 @@ function solve(matrix: number[][], output: number[]): number[] | null {
   return augmented.map((row) => row[n])
 }
 
+export type WeatherReference = { wind: number; pressure: number; humidity: number; temperature: number }
+
 export function adjustedRegression(launches: Launch[]): Model | null {
   if (launches.length < 4) return null
-  const features = launches.map((launch) => [1, totalMass(launch), launch.windSpeed, launch.airPressure, launch.humidity])
+  const features = launches.map((launch) => [1, totalMass(launch), launch.windSpeed, launch.airPressure, launch.humidity, launch.temperature])
   const target = launches.map((launch) => launch.altitude)
   const columns = features[0].length
   const normalMatrix = Array.from({ length: columns }, () => Array(columns).fill(0))
@@ -102,11 +104,22 @@ export function median(values: number[]) {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
 }
 
-export function adjustedAltitude(launch: Launch, model: Model, reference: { wind: number; pressure: number; humidity: number }) {
-  const [, windCoefficient, pressureCoefficient, humidityCoefficient] = model.coefficients
-  const observedWeather = windCoefficient * launch.windSpeed + pressureCoefficient * launch.airPressure + humidityCoefficient * launch.humidity
-  const referenceWeather = windCoefficient * reference.wind + pressureCoefficient * reference.pressure + humidityCoefficient * reference.humidity
+export function adjustedAltitude(launch: Launch, model: Model, reference: WeatherReference) {
+  const [, windCoefficient, pressureCoefficient, humidityCoefficient, temperatureCoefficient] = model.coefficients
+  const observedWeather = windCoefficient * launch.windSpeed + pressureCoefficient * launch.airPressure + humidityCoefficient * launch.humidity + temperatureCoefficient * launch.temperature
+  const referenceWeather = windCoefficient * reference.wind + pressureCoefficient * reference.pressure + humidityCoefficient * reference.humidity + temperatureCoefficient * reference.temperature
   return launch.altitude - observedWeather + referenceWeather
+}
+
+export function predictAdjustedAltitude(model: Model, mass: number, weather: WeatherReference) {
+  const [massCoefficient, windCoefficient, pressureCoefficient, humidityCoefficient, temperatureCoefficient] = model.coefficients
+  return model.intercept + massCoefficient * mass + windCoefficient * weather.wind + pressureCoefficient * weather.pressure + humidityCoefficient * weather.humidity + temperatureCoefficient * weather.temperature
+}
+
+export function optimalRocketMass(model: Model | null, targetAltitude: number, weather: WeatherReference) {
+  if (!model || Math.abs(model.coefficients[0]) < 1e-8) return null
+  const weatherAltitude = model.intercept + model.coefficients[1] * weather.wind + model.coefficients[2] * weather.pressure + model.coefficients[3] * weather.humidity + model.coefficients[4] * weather.temperature
+  return (targetAltitude - weatherAltitude) / model.coefficients[0]
 }
 
 // ---------------------------------------------------------------------------
