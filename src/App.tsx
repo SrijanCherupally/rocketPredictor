@@ -60,8 +60,8 @@ const altitudePredictionEquation = (model: ReturnType<typeof adjustedRegression>
 }
 const descentPredictionEquation = (model: ReturnType<typeof descentRegression>) => {
   if (!model) return null
-  const labels = ['mass', 'altitude', 'parachute', 'wind', 'pressure', 'humidity', 'temperature']
-  return `descent = ${model.intercept.toFixed(2)}${model.coefficients.map((coefficient, index) => equationTerm(coefficient, `((${labels[index]} − ${model.means[index].toFixed(2)})/${model.scales[index].toFixed(2)})`)).join('')}`
+  const labels = ['m', 'h', 'p', 'w', 'pr', 'hu', 't']
+  return `descent = ${model.intercept.toFixed(2)}${model.coefficients.map((coefficient, index) => equationTerm(coefficient, `(${labels[index]}−${model.means[index].toFixed(1)})/${model.scales[index].toFixed(1)}`)).join('')}`
 }
 
 const ftToM = (value: number) => value / 3.28084
