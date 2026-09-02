@@ -17,8 +17,10 @@ The live site is hosted on Vercel.
 - Switch between Imperial and Metric units
 - See recent flights and your full flight history
 - Get weight suggestions based on previous flights
-- Compare simple and weather-aware predictions
+- Compare simple and weather-aware predictions with confidence intervals
+- View descent time predictions based on flight conditions
 - Review prediction accuracy and sample size
+- Explore insights dashboard with flight trends and variable impact analysis
 - Export your flights as a JSON backup
 - Keep the same account updated on multiple devices
 
@@ -55,7 +57,7 @@ Cloud mode uses Supabase for:
 - Email and password sign-in
 - Account verification emails
 - Securely storing flights and preferences
-- Keeping each user’s records private
+- Keeping each user's records private
 - Updating the app when the same account is used on another device
 
 The database setup is saved in [`supabase/migrations/0001_cloud_workspace.sql`](supabase/migrations/0001_cloud_workspace.sql).
@@ -94,15 +96,17 @@ Important storage details:
 
 ## How predictions work
 
-### Basic prediction
+### Basic prediction (altitude)
 
-The basic prediction compares rocket weight with peak altitude from previous flights. At least three flights are needed before it can make a prediction.
+The basic altitude prediction compares rocket weight with peak altitude from previous flights. It uses a simple linear regression model. At least three flights are needed before it can make a prediction.
 
-### Weather-aware prediction
+### Weather-aware prediction (altitude)
 
-The weather-aware prediction also considers wind, air pressure, and humidity. It needs at least seven flights before it becomes available.
+The weather-aware altitude prediction also considers wind, air pressure, humidity, and temperature. It uses an adjusted regression model for improved accuracy. It needs at least seven flights before it becomes available.
 
-Temperature is recorded and shown in the flight log, but it is not yet included in the weather-aware calculation.
+### Descent time prediction
+
+The descent time prediction estimates how long a parachute descent will take based on rocket mass, apogee altitude, parachute size, and weather conditions. It uses a normalized linear regression model trained on flight data. The prediction equation displays the standardized coefficients and variable scales for transparency.
 
 ## Useful commands
 
@@ -126,11 +130,12 @@ npm run build
 .
 ├── src/
 │   ├── App.tsx          # Main dashboard and account screens
-│   ├── analytics.ts     # Prediction calculations
+│   ├── analytics.ts     # Prediction calculations and regression models
 │   ├── cloud.ts         # Cloud saving and syncing
 │   ├── supabase.ts      # Supabase connection and sign-in
 │   ├── seed.ts          # Starter demo flights
-│   └── styles.css       # App styling
+│   ├── useTheme.ts      # Light/dark theme hook
+│   └── styles.css       # App styling with custom properties
 ├── supabase/
 │   └── migrations/      # Database setup
 ├── index.html           # Page title and description
