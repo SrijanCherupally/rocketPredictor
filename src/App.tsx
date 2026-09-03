@@ -68,9 +68,11 @@ const ftToM = (value: number) => value / 3.28084
 const mphToKmh = (value: number) => value * 1.60934
 
 // TARC scoring: 1 point per 1 ft altitude deviation, 4 points per second outside descent time frame
+// Only calculate if descentTime is available (non-zero)
 const tarcScore = (altitude: number, descentTime: number, targetAltitude: number, targetDescentTime: number) => {
   const altitudeDeviation = Math.abs(Math.round(altitude) - Math.round(targetAltitude))
-  const descentDeviation = Math.max(0, Math.abs(descentTime - targetDescentTime))
+  // Only penalize descent if it was recorded
+  const descentDeviation = descentTime > 0 ? Math.abs(descentTime - targetDescentTime) : 0
   return altitudeDeviation + (descentDeviation * 4)
 }
 
@@ -538,11 +540,13 @@ function InsightsPanel({ launches, targetAltitude, altitudeModel, descentModel, 
 function TarcOverPointsInsight({ launches, targetAltitude }: { launches: Launch[]; targetAltitude: number }) {
   const TARGET_DESCENT_TIME = 45
   const scores = launches.map((launch) => tarcScore(launch.altitude, launch.descentTime, targetAltitude, TARGET_DESCENT_TIME))
-  const average = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : 0
-  const bestScore = scores.length ? Math.min(...scores) : null
-  const worstScore = scores.length ? Math.max(...scores) : null
+  const nonZeroScores = scores.filter((score) => score > 0)
+  const average = nonZeroScores.length ? nonZeroScores.reduce((sum, score) => sum + score, 0) / nonZeroScores.length : 0
+  const bestScore = nonZeroScores.length ? Math.min(...nonZeroScores) : null
+  const worstScore = nonZeroScores.length ? Math.max(...nonZeroScores) : null
+  const flightsWithScores = nonZeroScores.length
 
-  return <section className="insights-grid tarc-insights"><article className="insight-card"><div className="insight-heading"><Target size={18} /><div><h2>TARC scoring</h2></div></div>{launches.length ? <><p className="insight-copy">Your flights average <b>{formatNumber(average, 1)} points</b> with a target of {formatNumber(targetAltitude)} ft and {TARGET_DESCENT_TIME}s descent.</p><div className="coverage-grid"><div><span>Best score</span><b>{bestScore} pts</b></div><div><span>Worst score</span><b>{worstScore} pts</b></div></div><small className="insight-note">1 point per ft altitude deviation + 4 points per second outside the {TARGET_DESCENT_TIME}s target descent time.</small></> : <InsightEmpty text="Log a flight to calculate TARC scores." />}</article></section>
+  return <section className="insights-grid tarc-insights"><article className="insight-card"><div className="insight-heading"><Target size={18} /><div><h2>TARC scoring</h2></div></div>{launches.length ? <><p className="insight-copy">Your flights average <b>{formatNumber(average, 1)} points</b> across {flightsWithScores} measurable flights (target: {formatNumber(targetAltitude)} ft, {TARGET_DESCENT_TIME}s descent).</p><div className="coverage-grid"><div><span>Best score</span><b>{bestScore !== null ? bestScore : '—'} pts</b></div><div><span>Worst score</span><b>{worstScore !== null ? worstScore : '—'} pts</b></div></div><small className="insight-note">1 point per ft altitude deviation + 4 points per second outside the {TARGET_DESCENT_TIME}s target descent time. Flights with missing descent time show as 0 and are excluded.</small></> : <InsightEmpty text="Log a flight to calculate TARC scores." />}</article></section>
 }
 
 function InsightEmpty({ text }: { text: string }) { return <div className="insight-empty"><Sparkles size={22} /><span>{text}</span></div> }
