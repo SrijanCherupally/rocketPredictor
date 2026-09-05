@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process'
 
 const folder = mkdtempSync(join(tmpdir(), 'apexflite-tests-'))
 try {
-  for (const name of ['analytics', 'experiments', 'massRange', 'seed', 'predictionV2']) {
+  for (const name of ['analytics', 'experiments', 'massRange', 'seed', 'predictionV2', 'predictionTypes', 'legacyEngine']) {
     const source = readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8')
     const output = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText.replace(/from '(\.\/[^']+)'/g, "from '$1.mjs'")
     writeFileSync(join(folder, `${name}.mjs`), output)

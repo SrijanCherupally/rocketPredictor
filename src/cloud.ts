@@ -70,8 +70,17 @@ const launchToRow = (userId: string, launch: Launch) => ({
 })
 
 export async function fetchWorkspace(client: Client, userId: string) {
+  const pageSize = 500
+  const allRows: CloudLaunchRow[] = []
+  for (let from = 0; ; from += pageSize) {
+    const result = await client.from('launches').select('*').eq('user_id', userId).order('date', { ascending: true }).order('launch_id', { ascending: true }).range(from, from + pageSize - 1)
+    if (result.error) throw result.error
+    const page = (result.data ?? []) as CloudLaunchRow[]
+    allRows.push(...page)
+    if (page.length < pageSize) break
+  }
   const [launchResult, preferenceResult] = await Promise.all([
-    client.from('launches').select('*').eq('user_id', userId).order('date', { ascending: true }),
+    Promise.resolve({ data: allRows, error: null }),
     client.from('user_preferences').select('*').eq('user_id', userId).maybeSingle(),
   ])
   if (launchResult.error) throw launchResult.error
@@ -89,7 +98,7 @@ export async function fetchWorkspace(client: Client, userId: string) {
 
 export async function importLaunches(client: Client, userId: string, launches: Launch[]) {
   if (launches.length === 0) return
-  const { error } = await client.from('launches').upsert(launches.map((launch) => launchToRow(userId, launch)), { onConflict: 'user_id,launch_id' })
+  const { error } = await client.from('launches').upsert(launches.map((launch) => launchToRow(userId, launch)), { onConflict: 'user_id,launch_id', ignoreDuplicates: true })
   if (error) throw error
 }
 

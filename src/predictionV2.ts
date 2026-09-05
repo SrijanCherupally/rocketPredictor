@@ -202,7 +202,7 @@ export const predictionEngineV2: PredictionEngineV2 = {
     const allCandidates = candidatesFor(flights)
     const evaluations = allCandidates.map(candidate => ({ candidate, validation: validate(flights, candidate.method) }))
     const learnedEligible = flights.length >= 8 && days >= 3
-    const eligible = evaluations.filter(item => item.candidate.method === 'monotonic-baseline' || (learnedEligible && item.validation && (item.candidate.features.length === 1 || weatherSpread >= 2)))
+    const eligible = evaluations.filter(item => item.candidate.method === 'monotonic-baseline' || (learnedEligible && item.validation && item.validation.metrics.massCoverage >= .6 && (item.candidate.features.length === 1 || weatherSpread >= 2)))
       .filter(item => isMonotonic(item.candidate, conditions, massRange))
     const ranked = eligible.sort((a, b) => {
       if (!a.validation) return 1

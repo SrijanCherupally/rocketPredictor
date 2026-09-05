@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { AlertTriangle, ArrowDownToLine, ArrowUpRight, BarChart3, Check, ChevronDown, CloudSun, Database, Download, Gauge, Lightbulb, LogOut, Menu, Pencil, Plus, Rocket, RotateCcw, Settings2, Sparkles, Sun, Target, Trash2, Wind, X, Activity, Upload } from 'lucide-react'
 import { useTheme } from './useTheme'
@@ -6,12 +6,14 @@ import { CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer,
 import { adjustedAltitude, adjustedRegression, configurationGroups, descentRegression, linearRegression, median, movingAverage, nextExperiment, optimalRocketMass, predictAdjustedAltitude, predictDescentTime, residualDiagnostics, simpleTrend, totalMass, variableImpactConfidence, variableWeights, type DescentConditions, type Launch, type WeatherReference } from './analytics'
 import { CloudConflictError, createLaunch, deleteLaunch, fetchWorkspace, importLaunches, savePreferences, updateLaunch, type CloudLaunchRow } from './cloud'
 import { isCloudConfigured, supabase } from './supabase'
-import { PredictionLab } from './PredictionLab'
-import { LaunchPlanner } from './LaunchPlanner'
 import { MassRangeControl } from './MassRangeControl'
 import { clampMassRange } from './massRange'
 import { validConditions, conditionsFor } from './experiments'
 import type { EngineVersion, ExportEnvelope, Units, WorkspacePreferences } from './predictionTypes'
+import { predictionEngineV2 } from './predictionV2'
+
+const PredictionLab = lazy(() => import('./PredictionLab').then(module => ({ default: module.PredictionLab })))
+const LaunchPlanner = lazy(() => import('./LaunchPlanner').then(module => ({ default: module.LaunchPlanner })))
 
 const STORAGE_KEY = 'apexflite-launches-v1'
 const PREF_KEY = 'apexflite-prefs-v1'
@@ -152,9 +154,11 @@ function App() {
   const [mobileNav, setMobileNav] = useState(false)
   const [toast, setToast] = useState('')
   const [session, setSession] = useState<Session | null>(null)
+  const [guestMode, setGuestMode] = useState(false)
   const [authReady, setAuthReady] = useState(!isCloudConfigured)
   const [cloudLoading, setCloudLoading] = useState(false)
   const [cloudError, setCloudError] = useState('')
+  const [online, setOnline] = useState(() => navigator.onLine)
   const [versions, setVersions] = useState<Record<string, number>>({})
   const [preferencesReady, setPreferencesReady] = useState(false)
   const [pendingImport, setPendingImport] = useState<Launch[] | null>(null)
@@ -192,6 +196,12 @@ function App() {
   }, [])
 
   useEffect(() => { if (toast) { const timeout = window.setTimeout(() => setToast(''), 2600); return () => window.clearTimeout(timeout) } }, [toast])
+  useEffect(() => {
+    const connected = () => { setOnline(true); setToast('Connection restored') }
+    const disconnected = () => { setOnline(false); setToast('Offline · reconnect before saving cloud changes') }
+    window.addEventListener('online', connected); window.addEventListener('offline', disconnected)
+    return () => { window.removeEventListener('online', connected); window.removeEventListener('offline', disconnected) }
+  }, [])
 
   useEffect(() => {
     if (!supabase) return
@@ -199,12 +209,12 @@ function App() {
     supabase.auth.getSession().then(({ data, error }) => {
       if (!mounted) return
       if (error) setCloudError(error.message)
-      if (data.session) setCloudLoading(true)
+      if (data.session) { setCloudLoading(true); setGuestMode(false) }
       setSession(data.session)
       setAuthReady(true)
     })
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      if (mounted) { if (nextSession) setCloudLoading(true); setSession(nextSession) }
+      if (mounted) { if (nextSession) { setCloudLoading(true); setGuestMode(false) } setSession(nextSession) }
     })
     return () => { mounted = false; listener.subscription.unsubscribe() }
   }, [])
@@ -279,6 +289,7 @@ function App() {
   const altitudeWeights = useMemo(() => variableWeights(adjustedModel, graphLaunches.map((launch) => [totalMass(launch), launch.windSpeed, launch.airPressure, launch.humidity, launch.temperature])), [adjustedModel, graphLaunches])
   const descentWeights = useMemo(() => variableWeights(descentModel, [], true), [descentModel])
   const predictedDescent = descentModel ? predictDescentTime(descentModel, descentConditions) : null
+  const v2Recommendation = useMemo(() => predictionEngineV2.recommend(launches, targetAltitude, descentConditions, [plannerMinMass, plannerMaxMass]), [launches, targetAltitude, descentConditions, plannerMinMass, plannerMaxMass])
   const reference = simulatorWeather
   const rawRecommendation = rawModel && Math.abs(rawModel.coefficients[0]) > 0.01 ? (targetAltitude - rawModel.intercept) / rawModel.coefficients[0] : null
   const adjustedRecommendation = optimalRocketMass(adjustedModel, targetAltitude, reference)
@@ -362,7 +373,7 @@ function App() {
     setTargetAltitude(next)
     persistPreferences({ targetAltitude: next })
   }
-  const changeEngineVersion = (next: EngineVersion) => { setEngineVersion(next); persistPreferences({ engineVersion: next }); setToast(next === 'legacy-v1' ? 'Legacy algorithms active' : 'Current v2 planner active') }
+  const changeEngineVersion = (next: EngineVersion) => { setEngineVersion(next); if (next === 'current-v2') setDateWindow(null); persistPreferences({ engineVersion: next }); setToast(next === 'legacy-v1' ? 'Legacy algorithms active' : 'Current v2 planner active') }
   const changePlannerLimits = (minimum: number, maximum: number) => { setPlannerMinMass(minimum); setPlannerMaxMass(maximum); persistPreferences({ plannerMinMass: minimum, plannerMaxMass: maximum }) }
   const navigate = (section: Section) => {
     const hash = { overview: 'dashboard', flights: 'flights', insights: 'analysis', experiments: 'planner', settings: 'settings' }[section]
@@ -388,9 +399,11 @@ function App() {
           const parsed: unknown = JSON.parse(contents)
           const records = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? ((parsed as { flights?: unknown; launches?: unknown }).flights ?? (parsed as { launches?: unknown }).launches) : undefined)
           if (!Array.isArray(records)) throw new Error('Expected an array of flights')
-          const imported = normalizeLaunches(records, true)
+          const normalizedRows = records.map(record => normalizeLaunches([record], true)[0] ?? null)
+          const invalidRows = normalizedRows.flatMap((record, index) => record ? [] : [index + 1])
+          const imported = normalizedRows.filter((record): record is Launch => record !== null)
           if (imported.length === 0) throw new Error('No valid flight records found')
-          if (imported.length !== records.length) throw new Error('Some flights have missing or invalid measurements. Correct the file before importing.')
+          if (invalidRows.length) throw new Error(`Invalid measurements in ${invalidRows.length === 1 ? 'row' : 'rows'} ${invalidRows.slice(0, 8).join(', ')}${invalidRows.length > 8 ? '…' : ''}. Correct the file before importing.`)
           if (new Set(imported.map(launch => launch.id)).size !== imported.length) throw new Error('Duplicate flight IDs in import file')
           const existingIds = new Set(launches.map((launch) => launch.id))
           const additions = imported.filter((launch) => !existingIds.has(launch.id))
@@ -472,9 +485,9 @@ function App() {
   }
 
   if (!authReady) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><strong>apexFlite</strong></div><h1>Connecting to your workspace…</h1><p>Restoring your secure cloud session.</p><div className="loading-line" /></div></div>
-  if (isCloudConfigured && !session) return <AuthScreen mode={authMode} setMode={(mode) => { setAuthMode(mode); setAuthMessage(''); setCloudError(''); setResendEmail('') }} email={authEmail} setEmail={setAuthEmail} password={authPassword} setPassword={setAuthPassword} busy={authBusy} message={authMessage} error={cloudError} onSubmit={submitAuth} resendEmail={resendEmail} resendBusy={resendBusy} onResend={resendVerification} />
+  if (isCloudConfigured && !session && !guestMode) return <AuthScreen mode={authMode} setMode={(mode) => { setAuthMode(mode); setAuthMessage(''); setCloudError(''); setResendEmail('') }} email={authEmail} setEmail={setAuthEmail} password={authPassword} setPassword={setAuthPassword} busy={authBusy} message={authMessage} error={cloudError} onSubmit={submitAuth} resendEmail={resendEmail} resendBusy={resendBusy} onResend={resendVerification} onGuest={() => setGuestMode(true)} />
   const graphFilters = <section className="graph-filters"><div><span>GRAPH FILTERS</span><strong>Explore your launch envelope</strong></div><label className="date-filter"> <span className="date-filter-heading"><span>Launch date</span><b>{new Date(selectedDateWindow[0]).toLocaleDateString()} – {new Date(selectedDateWindow[1]).toLocaleDateString()}</b></span><span className="date-slider"><span className="date-slider-track" /><span className="date-slider-fill" style={{ left: `${((selectedDateWindow[0] - graphBounds.minDate) / Math.max(1, graphBounds.maxDate - graphBounds.minDate)) * 100}%`, right: `${100 - ((selectedDateWindow[1] - graphBounds.minDate) / Math.max(1, graphBounds.maxDate - graphBounds.minDate)) * 100}%` }} /><input aria-label="Start launch date" type="range" min={graphBounds.minDate} max={graphBounds.maxDate} value={selectedDateWindow[0]} onChange={(event) => setDateWindow([Math.min(Number(event.target.value), selectedDateWindow[1]), selectedDateWindow[1]])} /><input aria-label="End launch date" type="range" min={graphBounds.minDate} max={graphBounds.maxDate} value={selectedDateWindow[1]} onChange={(event) => setDateWindow([selectedDateWindow[0], Math.max(Number(event.target.value), selectedDateWindow[0])])} /></span></label><button className="text-button" onClick={() => { setZoomReset(current => current + 1); setDateWindow(null) }}>Reset</button></section>
-  const syncStatus = cloudLoading ? 'Syncing…' : session ? 'Synced online' : 'Local preview mode'
+  const syncStatus = !online ? 'Offline · cloud updates paused' : cloudLoading ? 'Syncing…' : session ? 'Synced online' : 'Local preview mode'
 
   return (
     <div className="app-shell">
@@ -482,7 +495,7 @@ function App() {
         <div className="brand"><div className="brand-mark"><Rocket size={20} /></div><div><strong>apexFlite</strong><span>flight intelligence</span></div></div>
         <div className="workspace-switcher"><div className="workspace-icon">1</div><div><b>Primary rocket</b><span>{session ? 'Synced across devices' : 'Local guest workspace'}</span></div></div>
         <nav><button className={activeSection === 'overview' ? 'active' : ''} onClick={() => navigate('overview')}><BarChart3 size={18} /> Dashboard</button><button className={activeSection === 'flights' ? 'active' : ''} onClick={() => navigate('flights')}><Database size={18} /> Flights <em>{launches.length}</em></button><button className={activeSection === 'experiments' ? 'active' : ''} onClick={() => navigate('experiments')}><Target size={18} /> Launch Planner</button><button className={activeSection === 'insights' ? 'active' : ''} onClick={() => navigate('insights')}><Sparkles size={18} /> Analysis</button></nav>
-        <div className="sidebar-bottom"><button className={activeSection === 'settings' ? 'active' : ''} onClick={() => navigate('settings')}><Settings2 size={18} /> Settings</button><div className="profile"><div className="avatar">{session ? (session.user.email?.slice(0, 2).toUpperCase() ?? 'RT') : 'LP'}</div><div><b>{session?.user.email ?? 'Local preview'}</b><span>{session ? 'Cloud sync active' : 'Saved on this device'}</span></div>{session && <button className="profile-menu" onClick={signOut} aria-label="Sign out"><LogOut size={14} /></button>}</div></div>
+        <div className="sidebar-bottom"><button className={activeSection === 'settings' ? 'active' : ''} onClick={() => navigate('settings')}><Settings2 size={18} /> Settings</button><div className="profile"><div className="avatar">{session ? (session.user.email?.slice(0, 2).toUpperCase() ?? 'RT') : 'LP'}</div><div><b>{session?.user.email ?? 'Local preview'}</b><span>{session ? 'Cloud sync active' : 'Saved on this device'}</span></div>{session ? <button className="profile-menu" onClick={signOut} aria-label="Sign out"><LogOut size={14} /></button> : isCloudConfigured && <button className="profile-menu" onClick={() => setGuestMode(false)} aria-label="Sign in to cloud"><ArrowUpRight size={14} /></button>}</div></div>
       </aside>
       {mobileNav && <button className="sidebar-scrim" onClick={() => setMobileNav(false)} aria-label="Close navigation" />}
       <main className="main-content">
@@ -492,12 +505,10 @@ function App() {
         {session && <div className={`sync-banner ${cloudLoading ? 'syncing' : ''}`}><span className="sync-dot" /> {syncStatus}<span>{session.user.email}</span></div>}
         {activeSection === 'settings' ? <SettingsPanel units={units} setUnits={changeUnits} targetAltitude={targetAltitude} setTargetAltitude={changeTargetAltitude} theme={theme} setTheme={setTheme} engineVersion={engineVersion} setEngineVersion={changeEngineVersion} plannerMinMass={plannerMinMass} plannerMaxMass={plannerMaxMass} setPlannerLimits={changePlannerLimits} /> : activeSection === 'flights' ? <FlightsPanel launches={launches} targetAltitude={targetAltitude} displayAltitude={displayAltitude} displayMass={displayMass} displayWind={displayWind} displayTemperature={displayTemperature} exportData={exportData} importData={importData} onDelete={removeLaunch} onEdit={editLaunch} onNew={openNewLaunch} /> : activeSection === 'insights' ? <><InsightsPanel launches={launches} targetAltitude={targetAltitude} altitudeModel={adjustedModel} descentModel={descentModel} altitudeWeights={altitudeWeights} descentWeights={descentWeights} units={units} /><TarcOverPointsInsight launches={launches} targetAltitude={targetAltitude} /><InsightsLab launches={launches} targetAltitude={targetAltitude} altitudeModel={adjustedModel} /></> : activeSection === 'experiments' ? engineVersion === 'legacy-v1' ? <><section className="legacy-mode-banner"><RotateCcw size={18} /><div><b>Legacy algorithms active</b><span>The original formulas and experiment workflow are preserved for repeatability.</span></div><button onClick={() => changeEngineVersion('current-v2')}>Return to current planner</button></section><section className="page-heading"><div><p className="eyebrow">LEGACY V1 · PRESERVED</p><h1>Experiments</h1><p className="subtitle">Original model comparison, descent sensitivity, and flight-by-flight validation.</p></div><button className="primary-button" onClick={openNewLaunch}><Plus size={17} /> Log a flight</button></section>{graphFilters}<PredictionLab launches={graphLaunches} conditions={descentConditions} setConditions={setDescentConditions} targetAltitude={targetAltitude} units={units} /></> : <LaunchPlanner launches={graphLaunches} targetAltitude={targetAltitude} conditions={descentConditions} setConditions={setDescentConditions} units={units} massLimits={[plannerMinMass, plannerMaxMass]} onOpenLegacy={() => changeEngineVersion('legacy-v1')} onNewFlight={openNewLaunch} /> : <>
         <section className="page-heading"><div><p className="eyebrow">{new Date(today).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()} <span className="live-dot" /> LIVE MODEL</p><h1>Good morning, team.</h1><p className="subtitle">Your flight data is getting smarter with every launch.</p></div><button className="primary-button" onClick={openNewLaunch}><Plus size={17} /> Log a flight</button></section>
-        {graphFilters}
+        {engineVersion === 'legacy-v1' && graphFilters}
         <section className="target-banner"><div className="target-icon"><Target size={20} /></div><div><span>Current target altitude</span><strong>{formatNumber(targetAltitude * (units === 'metric' ? .3048 : 1))} <small>{units === 'metric' ? 'm' : 'ft'}</small></strong></div><div className="target-divider" /><div className="target-status"><Check size={15} /> <span>{Math.abs(targetGap) < 15 ? 'On target range' : targetGap > 0 ? 'Running high' : 'Running low'}</span></div><button onClick={() => navigate('settings')}>Edit target <ArrowUpRight size={15} /></button></section>
-        <section className="stats-grid"><StatCard label="FLIGHTS LOGGED" value={String(launches.length).padStart(2, '0')} note="Saved flight records" trend="up" icon={<Database size={18} />} /><StatCard label="AVG. ALTITUDE" value={formatNumber(avgAltitude)} unit="ft" note={`${targetGap >= 0 ? '+' : ''}${formatNumber(targetGap)} ft vs target`} trend={targetGap >= 0 ? 'up' : 'down'} icon={<ArrowUpRight size={18} />} /><StatCard label="AVG. DESCENT" value={formatNumber(avgDescent, 1)} unit="sec" note="Target: 34.0 sec" trend={Math.abs(avgDescent - 34) < 2 ? 'up' : 'down'} icon={<ArrowDownToLine size={18} />} /><StatCard label="BASELINE TRAINING FIT" value={adjustedModel ? formatNumber(adjustedModel.r2 * 100) : '—'} unit={adjustedModel ? '%' : ''} note={adjustedModel ? 'Training R², not forecast confidence' : 'Need 4+ flights'} trend="up" icon={<Gauge size={18} />} /></section>
-        <section className="analysis-grid"><AnalysisCard title="Original mass-only model" subtitle="Altitude vs. total mass · no weather compensation" icon={<Activity size={18} />} accent="blue" model={rawModel} recommendation={rawRecommendation} chart={<RawChart key={zoomReset} data={rawChart} target={targetAltitude} units={units} />} /><AnalysisCard title="Original weather-aware model" subtitle="Adjusted to your entered weather · recommendation updates live" icon={<CloudSun size={18} />} accent="purple" model={adjustedModel} recommendation={adjustedRecommendation} chart={<AdjustedChart key={zoomReset} data={adjustedChart} target={targetAltitude} units={units} />} /></section>
-        <AltitudePredictorWithConfidence units={units} model={adjustedModel} fallbackModel={rawModel} targetAltitude={targetAltitude} weather={simulatorWeather} setWeather={setSimulatorWeather} optimalMass={simulatorMass} predictedAltitude={simulatorPrediction} observedMasses={graphLaunches.map(totalMass)} confidence={altitudeConfidence} weights={altitudeWeights} />
-        <DescentPredictorWithConfidence units={units} model={descentModel} conditions={descentConditions} setConditions={setDescentConditions} predictedDescent={predictedDescent} confidence={descentConfidence} weights={descentWeights} />
+        <section className="stats-grid"><StatCard label="FLIGHTS LOGGED" value={String(launches.length).padStart(2, '0')} note="Saved flight records" trend="up" icon={<Database size={18} />} /><StatCard label="AVG. ALTITUDE" value={formatNumber(avgAltitude * (units === 'metric' ? .3048 : 1))} unit={units === 'metric' ? 'm' : 'ft'} note={`${targetGap >= 0 ? '+' : ''}${formatNumber(targetGap * (units === 'metric' ? .3048 : 1))} ${units === 'metric' ? 'm' : 'ft'} vs target`} trend={targetGap >= 0 ? 'up' : 'down'} icon={<ArrowUpRight size={18} />} /><StatCard label="AVG. DESCENT" value={formatNumber(avgDescent, 1)} unit="sec" note="Recorded recovery average" trend={Math.abs(avgDescent - 34) < 2 ? 'up' : 'down'} icon={<ArrowDownToLine size={18} />} /><StatCard label="PLANNER STATUS" value={v2Recommendation.status === 'ready' ? 'READY' : '—'} note={v2Recommendation.status === 'ready' ? `${v2Recommendation.metrics.testedFlights} held-out flights` : v2Recommendation.reason} trend={v2Recommendation.status === 'ready' ? 'up' : 'down'} icon={<Gauge size={18} />} /></section>
+        {engineVersion === 'current-v2' ? <section className="dashboard-planner-card"><div><p className="eyebrow">CURRENT V2 RECOMMENDATION</p><h2>{v2Recommendation.status === 'ready' ? `${formatNumber(v2Recommendation.recommendedMass, 1)} g` : 'Build a supported recommendation'}</h2><p>{v2Recommendation.status === 'ready' ? `${v2Recommendation.methodLabel} · expected ${formatNumber(v2Recommendation.expectedAltitude * (units === 'metric' ? .3048 : 1))} ${units === 'metric' ? 'm' : 'ft'}` : v2Recommendation.reason}</p></div><button className="primary-button" onClick={() => navigate('experiments')}>Open Launch Planner <ArrowUpRight size={16} /></button></section> : <><section className="analysis-grid"><AnalysisCard title="Original mass-only model" subtitle="Altitude vs. total mass · no weather compensation" icon={<Activity size={18} />} accent="blue" model={rawModel} recommendation={rawRecommendation} chart={<RawChart key={zoomReset} data={rawChart} target={targetAltitude} units={units} />} /><AnalysisCard title="Original weather-aware model" subtitle="Adjusted to your entered weather · recommendation updates live" icon={<CloudSun size={18} />} accent="purple" model={adjustedModel} recommendation={adjustedRecommendation} chart={<AdjustedChart key={zoomReset} data={adjustedChart} target={targetAltitude} units={units} />} /></section><AltitudePredictorWithConfidence units={units} model={adjustedModel} fallbackModel={rawModel} targetAltitude={targetAltitude} weather={simulatorWeather} setWeather={setSimulatorWeather} optimalMass={simulatorMass} predictedAltitude={simulatorPrediction} observedMasses={graphLaunches.map(totalMass)} confidence={altitudeConfidence} weights={altitudeWeights} /><DescentPredictorWithConfidence units={units} model={descentModel} conditions={descentConditions} setConditions={setDescentConditions} predictedDescent={predictedDescent} confidence={descentConfidence} weights={descentWeights} /></>}
         <section className="recent-section"><div className="section-heading"><div><h2>Recent flights</h2><p>Latest recorded performance</p></div><button className="text-button" onClick={() => navigate('flights')}>View all <ArrowUpRight size={15} /></button></div><FlightTable launches={[...launches].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id)).slice(0, 5)} targetAltitude={targetAltitude} displayAltitude={displayAltitude} displayMass={displayMass} displayWind={displayWind} displayTemperature={displayTemperature} onDelete={removeLaunch} onEdit={editLaunch} /></section>
         </>}
       </main>
@@ -508,10 +519,10 @@ function App() {
   )
 }
 
-function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, busy, message, error, onSubmit, resendEmail, resendBusy, onResend }: { mode: 'sign-in' | 'sign-up' | 'reset'; setMode: (mode: 'sign-in' | 'sign-up' | 'reset') => void; email: string; setEmail: (value: string) => void; password: string; setPassword: (value: string) => void; busy: boolean; message: string; error: string; onSubmit: (event: React.FormEvent) => void; resendEmail: string; resendBusy: boolean; onResend: () => void }) {
+function AuthScreen({ mode, setMode, email, setEmail, password, setPassword, busy, message, error, onSubmit, resendEmail, resendBusy, onResend, onGuest }: { mode: 'sign-in' | 'sign-up' | 'reset'; setMode: (mode: 'sign-in' | 'sign-up' | 'reset') => void; email: string; setEmail: (value: string) => void; password: string; setPassword: (value: string) => void; busy: boolean; message: string; error: string; onSubmit: (event: React.FormEvent) => void; resendEmail: string; resendBusy: boolean; onResend: () => void; onGuest: () => void }) {
   const reset = mode === 'reset'
   const signUp = mode === 'sign-up'
-  return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><div><strong>apexFlite</strong><span>flight intelligence</span></div></div><p className="eyebrow">SECURE TEAM WORKSPACE</p><h1>{reset ? 'Reset your password' : signUp ? 'Create your account' : 'Welcome back'}</h1><p className="auth-copy">{reset ? 'We will send a secure link to your email address.' : 'Sign in to sync your launch history across every device.'}</p><form className="auth-form" onSubmit={onSubmit}><label>Email address<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></label>{!reset && <label>Password<input type="password" autoComplete={signUp ? 'new-password' : 'current-password'} required minLength={6} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 6 characters" /></label>}{(message || error) && <p className={error ? 'auth-feedback error' : 'auth-feedback'}>{error || message}</p>}<button type="submit" className="primary-button auth-submit" disabled={busy}>{busy ? 'Working…' : reset ? 'Send reset link' : signUp ? 'Create account' : 'Sign in'}</button></form>{resendEmail && !reset && <button type="button" className="secondary-button auth-resend" onClick={onResend} disabled={resendBusy}>{resendBusy ? 'Sending…' : 'Resend verification email'}</button>}<div className="auth-links">{reset ? <button onClick={() => setMode('sign-in')}>Back to sign in</button> : <><button onClick={() => setMode(signUp ? 'sign-in' : 'sign-up')}>{signUp ? 'Already have an account? Sign in' : 'Create an account'}</button>{!signUp && <button onClick={() => setMode('reset')}>Forgot password?</button>}</>}</div><small className="auth-note">Your launch data is private to your authenticated account.</small></div></div>
+  return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><div><strong>apexFlite</strong><span>flight intelligence</span></div></div><p className="eyebrow">SECURE CLOUD WORKSPACE</p><h1>{reset ? 'Reset your password' : signUp ? 'Create your account' : 'Welcome back'}</h1><p className="auth-copy">{reset ? 'We will send a secure link to your email address.' : 'Sign in to sync your launch history across every device.'}</p><form className="auth-form" onSubmit={onSubmit}><label>Email address<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></label>{!reset && <label>Password<input type="password" autoComplete={signUp ? 'new-password' : 'current-password'} required minLength={6} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 6 characters" /></label>}{(message || error) && <p className={error ? 'auth-feedback error' : 'auth-feedback'}>{error || message}</p>}<button type="submit" className="primary-button auth-submit" disabled={busy}>{busy ? 'Working…' : reset ? 'Send reset link' : signUp ? 'Create account' : 'Sign in'}</button></form>{resendEmail && !reset && <button type="button" className="secondary-button auth-resend" onClick={onResend} disabled={resendBusy}>{resendBusy ? 'Sending…' : 'Resend verification email'}</button>}<div className="auth-links">{reset ? <button onClick={() => setMode('sign-in')}>Back to sign in</button> : <><button onClick={() => setMode(signUp ? 'sign-in' : 'sign-up')}>{signUp ? 'Already have an account? Sign in' : 'Create an account'}</button>{!signUp && <button onClick={() => setMode('reset')}>Forgot password?</button>}</>}</div>{!reset && <button type="button" className="secondary-button auth-guest" onClick={onGuest}>Continue as guest on this device</button>}<small className="auth-note">Guest records remain in this browser until you explicitly merge them after signing in.</small></div></div>
 }
 
 function MigrationDialog({ count, busy, onImport, onDismiss }: { count: number; busy: boolean; onImport: () => void | Promise<void>; onDismiss: () => void }) {

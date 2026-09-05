@@ -3,31 +3,42 @@ import { createRequire } from 'node:module'
 import { readFileSync, mkdirSync } from 'node:fs'
 import ts from 'typescript'
 import assert from 'node:assert/strict'
+import { createServer } from 'vite'
 
 // Set PLAYWRIGHT_PACKAGE to a bundled installation, or install playwright locally.
 const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.PLAYWRIGHT_PACKAGE || 'playwright')
 const seedSource = ts.transpileModule(readFileSync(new URL('../src/seed.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText
 const { seedLaunches } = await import(`data:text/javascript;base64,${Buffer.from(seedSource).toString('base64')}`)
-const browser = await chromium.launch({ headless: true, channel: process.env.TEST_BROWSER || 'msedge' })
+let url = process.env.TEST_URL || 'http://127.0.0.1:5173'
+const devServer = process.env.APEXFLITE_DEV_COMMAND ? await createServer({ server: { host: '127.0.0.1', port: 0 } }) : null
+if (devServer) { await devServer.listen(); url = devServer.resolvedUrls?.local[0] ?? url }
+const launchOptions = process.env.TEST_BROWSER ? { headless: true, channel: process.env.TEST_BROWSER } : { headless: true }
+const browser = await chromium.launch(launchOptions)
 const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } })
 const page = await context.newPage()
 const errors = []
 page.on('pageerror', error => errors.push(error.message))
-const url = process.env.TEST_URL || 'http://127.0.0.1:5173'
 const navigate = async name => {
-  if (await page.getByRole('button', { name: 'Open navigation' }).isVisible()) await page.getByRole('button', { name: 'Open navigation' }).click()
+  if ((page.viewportSize()?.width ?? 1440) <= 760) await page.getByRole('button', { name: 'Open navigation' }).click()
   await page.getByRole('button', { name, exact: true }).click()
 }
 mkdirSync('artifacts', { recursive: true })
 try {
   await page.goto(url)
   assert.equal(await page.locator('.prediction-lab').count(), 0)
-  await navigate('Experiments')
-  await page.getByText('No fully validated comparison yet').first().waitFor()
+  await navigate('Launch Planner')
+  await page.getByRole('heading', { name: 'More flights needed' }).waitFor()
   assert.equal(await page.getByText('NaN', { exact: true }).count(), 0)
   await page.evaluate(data => localStorage.setItem('apexflite-launches-v1', JSON.stringify(data)), seedLaunches)
   await page.reload()
+  await navigate('Launch Planner')
+  await page.getByRole('heading', { name: 'Ideal launch mass' }).waitFor()
+  assert.equal(await page.getByRole('spinbutton', { name: 'Temperature', exact: true }).count(), 1)
+  await page.screenshot({ path: 'artifacts/planner-v2-desktop.png', fullPage: true })
+  await navigate('Settings')
+  await page.getByRole('button', { name: /Legacy v1/ }).click()
+  await navigate('Dashboard')
   await page.getByRole('heading', { name: 'Original weather-aware model' }).waitFor()
   const firstRange = page.getByRole('group', { name: 'Mass range zoom' }).first()
   await firstRange.getByRole('spinbutton', { name: 'Minimum visible mass' }).fill('574')
@@ -52,9 +63,9 @@ try {
   assert.notEqual(await overviewMass.innerText(), massBefore, 'overview mass must react to weather')
   assert.equal(await overviewMass.innerText(), await simulator.locator('.simulator-result strong').innerText())
   await page.screenshot({ path: 'artifacts/overview-desktop.png', fullPage: true })
-  await navigate('Experiments')
+  await navigate('Launch Planner')
   const lab = page.locator('.prediction-lab')
-  await page.getByText('Lowest held-out error:', { exact: false }).first().waitFor()
+  await lab.locator('.lab-comparison-disclosure').first().waitFor()
   const massComparisonDisclosure = lab.locator('.lab-stage-mass .lab-comparison-disclosure')
   await massComparisonDisclosure.locator(':scope > summary').click()
   assert.equal(await lab.getByRole('spinbutton', { name: 'Wind', exact: true }).inputValue(), '5')
@@ -71,11 +82,11 @@ try {
   await lab.getByRole('spinbutton', { name: 'Wind', exact: true }).fill('6')
   assert.equal(await experimentMass.innerText(), massOnly)
   await lab.getByText('This algorithm is mass-only', { exact: true }).waitFor()
-  await navigate('Overview')
+  await navigate('Dashboard')
   assert.equal(await simulator.getByRole('spinbutton', { name: 'WIND', exact: true }).inputValue(), '6')
   assert.equal(await page.locator('.prediction-lab').count(), 0)
-  await navigate('Experiments')
-  await page.getByText('Lowest held-out error:', { exact: false }).first().waitFor()
+  await navigate('Launch Planner')
+  await lab.locator('.lab-comparison-disclosure').first().waitFor()
   await massComparisonDisclosure.locator(':scope > summary').click()
   await lab.getByRole('spinbutton', { name: 'Wind', exact: true }).fill('4')
   const downloadEvent = page.waitForEvent('download')
@@ -92,7 +103,7 @@ try {
   await validationComparison.locator('summary').click()
   await lab.getByLabel('Mass algorithm').selectOption('ridge')
   await lab.getByLabel('Descent algorithm').selectOption('neural')
-  await lab.getByText('Small-data neural model active', { exact: false }).waitFor()
+  assert.equal(await lab.getByLabel('Descent algorithm').inputValue(), 'neural')
   assert.equal(await lab.locator('.lab-summary').first().locator('strong').first().innerText() === '—', false)
   await lab.getByLabel('Mass algorithm').selectOption('neural')
   assert.notEqual(await experimentMass.innerText(), '—')
@@ -105,7 +116,7 @@ try {
   await page.screenshot({ path: 'artifacts/experiments-desktop.png', fullPage: true })
   await navigate('Settings')
   await page.getByRole('button', { name: /Metric/ }).click()
-  await navigate('Experiments')
+  await navigate('Launch Planner')
   await lab.getByRole('spinbutton', { name: 'Descent altitude' }).waitFor()
   assert.equal(await lab.getByRole('spinbutton', { name: 'Descent altitude' }).inputValue(), '243.84')
   await page.getByRole('button', { name: 'Log a flight', exact: true }).click()
@@ -126,13 +137,13 @@ try {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'mobile page must not overflow horizontally')
   await page.evaluate(() => localStorage.setItem('apexflite-theme-v1', 'dark'))
   await page.reload()
-  await navigate('Experiments')
-  await page.getByText('Lowest held-out error:', { exact: false }).first().waitFor()
+  await navigate('Launch Planner')
+  await lab.locator('.lab-comparison-disclosure').first().waitFor()
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark')
   await page.screenshot({ path: 'artifacts/overview-mobile-dark.png', fullPage: true })
   await page.evaluate(data => localStorage.setItem('apexflite-launches-v1', JSON.stringify(data)), seedLaunches.map(l => ({ ...l, rocketMass: 578 })))
   await page.reload()
-  await navigate('Experiments')
+  await navigate('Launch Planner')
   await page.getByRole('heading', { name: 'Descent sensitivity', exact: true }).waitFor()
   await lab.getByRole('slider', { name: 'Lower mass handle' }).waitFor()
   assert.equal(await lab.getByRole('slider', { name: 'Lower mass handle' }).isDisabled(), true)
@@ -140,7 +151,7 @@ try {
     const reported = JSON.parse(readFileSync(process.env.TEST_REPORTED_FILE, 'utf8'))
     await page.evaluate(data => { localStorage.setItem('apexflite-launches-v1', JSON.stringify(data)); localStorage.setItem('apexflite-prefs-v1', 'imperial') }, reported)
     await page.setViewportSize({ width: 1440, height: 1100 })
-    await page.reload(); await navigate('Experiments')
+    await page.reload(); await navigate('Launch Planner')
     await massComparisonDisclosure.locator(':scope > summary').click()
     await lab.getByLabel('Mass algorithm').selectOption('baseline')
     const row = validationTable.getByRole('row').filter({ hasText: 'Original weather regression' })
@@ -162,4 +173,4 @@ try {
   // No edits to a user browser: this entire test uses an isolated context.
   assert.deepEqual(errors, [])
   console.log('Browser checks passed: separate tab, shared weather, live mass updates, stable validation scores, exported audit, zoom, metric save, mobile/dark layout, constant mass, no runtime errors.')
-} finally { await browser.close() }
+} finally { await browser.close(); await devServer?.close() }

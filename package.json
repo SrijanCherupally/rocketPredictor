@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "npm run test:legacy && node scripts/test.mjs",
+    "test": "npm run test:legacy && node scripts/test.mjs && node --test tests/contracts.test.mjs",
     "test:legacy": "node scripts/verify-legacy.mjs",
     "test:browser": "node scripts/browser-smoke.mjs",
     "typecheck": "tsc -b --pretty false",
@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.63.0",
     "@types/node": "^26.4.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.5",

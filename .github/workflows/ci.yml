@@ -1,0 +1,59 @@
+name: Validate apexFlite
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify preserved algorithms
+        run: npm run test:legacy
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test algorithms
+        run: npm test
+
+      - name: Build production app
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser smoke test
+        env:
+          APEXFLITE_DEV_COMMAND: npm run dev -- --host 127.0.0.1
+        run: npm run test:browser
+
+      - name: Upload browser artifacts after failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-artifacts
+          path: artifacts/
+          if-no-files-found: ignore
