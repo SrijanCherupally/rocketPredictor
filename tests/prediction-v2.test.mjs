@@ -29,7 +29,7 @@ test('v2 never extrapolates to an unreachable target', () => {
 test('v2 learned models require eight flights across three launch days', () => {
   const result = predictionEngineV2.recommend(seedLaunches.slice(0, 7), 800, conditions)
   assert.ok(result.warnings.some(warning => warning.includes('eight flights')))
-  if (result.status === 'ready') assert.equal(result.method, 'monotonic-baseline')
+  if (result.status === 'ready') assert.equal(result.method, 'physics-hybrid')
 })
 
 test('v2 honors configured mass limits', () => {
@@ -58,6 +58,40 @@ test('v2 selects a weather model when held-out weather signal is strong', () => 
   assert.notEqual(calm.method, 'monotonic-baseline')
   assert.notEqual(windy.method, 'monotonic-baseline')
   assert.ok(Math.abs(calm.recommendedMass - windy.recommendedMass) > 1)
+})
+
+test('every launch-day weather control changes the v2 ideal mass', () => {
+  const baseline = predictionEngineV2.recommend(seedLaunches, 800, conditions)
+  assert.equal(baseline.status, 'ready')
+  for (const changed of [
+    { ...conditions, wind: 8 },
+    { ...conditions, pressure: 30.2 },
+    { ...conditions, humidity: 80 },
+    { ...conditions, temperature: 85 },
+  ]) {
+    const result = predictionEngineV2.recommend(seedLaunches, 800, changed)
+    assert.equal(result.status, 'ready')
+    assert.ok(Math.abs(result.recommendedMass - baseline.recommendedMass) >= .05)
+  }
+})
+
+test('v2 reports validation error for every altitude method', () => {
+  const result = predictionEngineV2.recommend(seedLaunches, 800, conditions)
+  assert.equal(result.status, 'ready')
+  assert.equal(result.comparisons.length, 5)
+  assert.ok(result.comparisons.some(comparison => comparison.selected))
+  assert.ok(result.comparisons.filter(comparison => comparison.metrics).every(comparison => comparison.metrics.mae >= 0 && comparison.marginOfError >= 0))
+})
+
+test('descent prediction is always available and calibrates from complete flights', () => {
+  const estimate = predictionEngineV2.predictDescent([], conditions)
+  assert.equal(estimate.status, 'ready')
+  assert.equal(estimate.method, 'physics-estimate')
+  assert.ok(Number.isFinite(estimate.expectedSeconds) && estimate.expectedSeconds > 0)
+  const calibrated = predictionEngineV2.predictDescent(seedLaunches, conditions)
+  assert.equal(calibrated.method, 'calibrated-physics')
+  assert.equal(calibrated.calibrationFlights, seedLaunches.length)
+  assert.ok(calibrated.marginOfError >= 0)
 })
 
 test('legacy adapter ignores new record metadata without changing measurements', () => {

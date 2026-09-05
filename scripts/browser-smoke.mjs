@@ -11,7 +11,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_PACKAGE || 'playwright')
 const seedSource = ts.transpileModule(readFileSync(new URL('../src/seed.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext } }).outputText
 const { seedLaunches } = await import(`data:text/javascript;base64,${Buffer.from(seedSource).toString('base64')}`)
 let url = process.env.TEST_URL || 'http://127.0.0.1:5173'
-const devServer = process.env.APEXFLITE_DEV_COMMAND ? await createServer({ server: { host: '127.0.0.1', port: 0 } }) : null
+const devServer = process.env.TEST_URL ? null : await createServer({ server: { host: '127.0.0.1', port: 0 } })
 if (devServer) { await devServer.listen(); url = devServer.resolvedUrls?.local[0] ?? url }
 const launchOptions = process.env.TEST_BROWSER ? { headless: true, channel: process.env.TEST_BROWSER } : { headless: true }
 const browser = await chromium.launch(launchOptions)
@@ -35,6 +35,15 @@ try {
   await navigate('Launch Planner')
   await page.getByRole('heading', { name: 'Ideal launch mass' }).waitFor()
   assert.equal(await page.getByRole('spinbutton', { name: 'Temperature', exact: true }).count(), 1)
+  const currentMass = page.locator('.planner-mass strong')
+  const currentMassBeforeWeather = await currentMass.innerText()
+  await page.getByRole('spinbutton', { name: 'Wind', exact: true }).fill('8')
+  await page.waitForFunction(before => document.querySelector('.planner-mass strong')?.textContent !== before, currentMassBeforeWeather)
+  assert.notEqual(await currentMass.innerText(), currentMassBeforeWeather, 'current v2 mass must react to weather')
+  await page.getByRole('heading', { name: 'Descent predictor' }).waitFor()
+  assert.match(await page.locator('.descent-result strong').innerText(), /sec$/)
+  assert.equal(await page.locator('.method-table tbody tr').count(), 5)
+  assert.ok((await page.locator('.planner-comparisons').innerText()).includes('80% MOE'))
   await page.screenshot({ path: 'artifacts/planner-v2-desktop.png', fullPage: true })
   await navigate('Settings')
   await page.getByRole('button', { name: /Legacy v1/ }).click()
