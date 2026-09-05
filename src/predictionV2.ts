@@ -1,5 +1,5 @@
 import type { DescentConditions, Launch } from './analytics'
-import type { PredictionEngineV2, PredictionMethodV2, PredictionMetrics } from './predictionTypes'
+import type { MethodComparison, PredictionEngineV2, PredictionMethodV2, PredictionMetrics } from './predictionTypes'
 
 type Candidate = {
   method: PredictionMethodV2
@@ -30,6 +30,26 @@ const quantile = (values: number[], q: number) => {
 }
 const valuesFor = (flight: Launch) => [flight.rocketMass, flight.windSpeed, flight.airPressure, flight.humidity, flight.temperature]
 const valuesForConditions = (conditions: DescentConditions) => [conditions.mass, conditions.wind, conditions.pressure, conditions.humidity, conditions.temperature]
+
+function airDensity(pressureInHg: number, temperatureF: number, humidityPercent: number) {
+  const pressurePa = pressureInHg * 3386.389
+  const temperatureC = (temperatureF - 32) * 5 / 9
+  const temperatureK = temperatureC + 273.15
+  const saturationPa = 610.94 * Math.exp(17.625 * temperatureC / (temperatureC + 243.04))
+  const vaporPa = Math.min(pressurePa * .2, saturationPa * Math.max(0, Math.min(100, humidityPercent)) / 100)
+  return (pressurePa - vaporPa) / (287.058 * temperatureK) + vaporPa / (461.495 * temperatureK)
+}
+
+function referenceWeather(flights: Launch[]) {
+  const middle = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]
+  return { wind: middle(flights.map(flight => flight.windSpeed)), pressure: middle(flights.map(flight => flight.airPressure)), humidity: middle(flights.map(flight => flight.humidity)), temperature: middle(flights.map(flight => flight.temperature)) }
+}
+
+function weatherMultiplier(conditions: DescentConditions, reference: ReturnType<typeof referenceWeather>) {
+  const densityRatio = airDensity(reference.pressure, reference.temperature, reference.humidity) / airDensity(conditions.pressure, conditions.temperature, conditions.humidity)
+  const windRatio = Math.exp(-.0015 * (conditions.wind ** 2 - reference.wind ** 2))
+  return Math.max(.78, Math.min(1.22, densityRatio ** .35 * windRatio))
+}
 
 // Modified Gram-Schmidt on an augmented ridge system avoids the unstable
 // normal-equation inversion used by Legacy v1.
@@ -102,6 +122,16 @@ function fitInverseMass(flights: Launch[]): Candidate | null {
   return { method: 'monotonic-baseline', label: labels['monotonic-baseline'], features: ['mass'], complexity: 1, predict: conditions => intercept + slope / conditions.mass }
 }
 
+function physicsWeatherCandidate(flights: Launch[]): Candidate | null {
+  const base = fitInverseMass(flights)
+  if (!base) return null
+  const reference = referenceWeather(flights)
+  return {
+    method: 'physics-hybrid', label: 'Weather-adjusted physics baseline', features: weatherFeatures, complexity: 2,
+    predict: conditions => base.predict(conditions) * weatherMultiplier(conditions, reference),
+  }
+}
+
 function nearestCandidate(flights: Launch[]): Candidate | null {
   if (flights.length < 8) return null
   const { scales } = scalesFor(flights)
@@ -138,7 +168,7 @@ function boundedNeuralCandidate(flights: Launch[]): Candidate | null {
 }
 
 function candidatesFor(flights: Launch[]) {
-  return [fitInverseMass(flights), standardizedCandidate(flights, 'weather-ridge', .2), standardizedCandidate(flights, 'physics-hybrid', .25, true), nearestCandidate(flights), boundedNeuralCandidate(flights)].filter((candidate): candidate is Candidate => candidate !== null)
+  return [fitInverseMass(flights), physicsWeatherCandidate(flights), standardizedCandidate(flights, 'weather-ridge', .2), nearestCandidate(flights), boundedNeuralCandidate(flights)].filter((candidate): candidate is Candidate => candidate !== null)
 }
 
 function isMonotonic(candidate: Candidate, conditions: DescentConditions, range: [number, number]) {
@@ -192,17 +222,35 @@ function validate(flights: Launch[], method: PredictionMethodV2) {
   }
 }
 
+function comparisonFor(candidate: Candidate, validation: ReturnType<typeof validate>, selected: PredictionMethodV2 | null, eligible: boolean, note: string | null): MethodComparison {
+  return { method: candidate.method, methodLabel: candidate.label, eligible, selected: candidate.method === selected, metrics: validation?.metrics ?? null, marginOfError: validation?.residual80 ?? null, note }
+}
+
+function rawDescentSeconds(conditions: DescentConditions) {
+  const massKg = Math.max(.001, conditions.mass / 1000)
+  const altitudeM = Math.max(0, conditions.altitude * .3048)
+  const diameterM = Math.max(.01, conditions.parachuteSize * .0254)
+  const area = Math.PI * (diameterM / 2) ** 2
+  const density = airDensity(conditions.pressure, conditions.temperature, conditions.humidity)
+  const terminalVelocity = Math.sqrt(2 * massKg * 9.80665 / Math.max(.0001, density * .75 * area))
+  return altitudeM / Math.max(.1, terminalVelocity)
+}
+
+function descentConditionsFor(flight: Launch): DescentConditions {
+  return { mass: flight.rocketMass, altitude: flight.altitude, parachuteSize: flight.parachuteSize, wind: flight.windSpeed, pressure: flight.airPressure, humidity: flight.humidity, temperature: flight.temperature }
+}
+
 export const predictionEngineV2: PredictionEngineV2 = {
   recommend(inputFlights, targetAltitude, conditions, limits) {
     const flights = inputFlights.filter(valid).sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
     const massRange: [number, number] | null = flights.length ? [Math.min(...flights.map(flight => flight.rocketMass)), Math.max(...flights.map(flight => flight.rocketMass))] : null
-    if (flights.length < 3 || !massRange || massRange[0] === massRange[1]) return { engineVersion: 'current-v2', status: 'needs-data', method: null, reason: 'Log at least three flights with different launch masses.', observedMassRange: massRange, warnings: [] }
+    if (flights.length < 3 || !massRange || massRange[0] === massRange[1]) return { engineVersion: 'current-v2', status: 'needs-data', method: null, reason: 'Log at least three flights with different launch masses.', observedMassRange: massRange, warnings: [], comparisons: [] }
     const days = new Set(flights.map(flight => flight.date)).size
     const weatherSpread = [1, 2, 3, 4].filter(index => Math.max(...flights.map(flight => valuesFor(flight)[index])) - Math.min(...flights.map(flight => valuesFor(flight)[index])) > [0, 2, .08, 8, 8][index]).length
     const allCandidates = candidatesFor(flights)
     const evaluations = allCandidates.map(candidate => ({ candidate, validation: validate(flights, candidate.method) }))
     const learnedEligible = flights.length >= 8 && days >= 3
-    const eligible = evaluations.filter(item => item.candidate.method === 'monotonic-baseline' || (learnedEligible && item.validation && item.validation.metrics.massCoverage >= .6 && (item.candidate.features.length === 1 || weatherSpread >= 2)))
+    const eligible = evaluations.filter(item => item.candidate.method === 'physics-hybrid' || (learnedEligible && item.validation && item.validation.metrics.massCoverage >= .6 && item.candidate.method !== 'monotonic-baseline' && weatherSpread >= 2))
       .filter(item => isMonotonic(item.candidate, conditions, massRange))
     const ranked = eligible.sort((a, b) => {
       if (!a.validation) return 1
@@ -210,21 +258,46 @@ export const predictionEngineV2: PredictionEngineV2 = {
       const tolerance = Math.max(3, Math.min(a.validation.metrics.mae, b.validation.metrics.mae) * .05)
       return Math.abs(a.validation.metrics.mae - b.validation.metrics.mae) <= tolerance ? a.candidate.complexity - b.candidate.complexity : a.validation.metrics.mae - b.validation.metrics.mae
     })
-    const selected = ranked[0] ?? evaluations.find(item => item.candidate.method === 'monotonic-baseline')
-    if (!selected) return { engineVersion: 'current-v2', status: 'unsupported', method: null, reason: 'The flight log does not contain a physically usable mass trend.', observedMassRange: massRange, warnings: [] }
+    const selected = ranked[0] ?? evaluations.find(item => item.candidate.method === 'physics-hybrid')
+    const comparisons = (Object.keys(labels) as PredictionMethodV2[]).map(method => {
+      const item = evaluations.find(evaluation => evaluation.candidate.method === method)
+      if (!item) return { method, methodLabel: labels[method], eligible: false, selected: false, metrics: null, marginOfError: null, note: method === 'bounded-neural' ? 'Needs at least 12 valid flights.' : 'Not fit by the current flight log.' }
+      const note = method === 'monotonic-baseline' ? 'Comparison only: it does not react to weather.' : !eligible.includes(item) && method !== selected?.candidate.method ? 'Evaluated, but did not meet selection safeguards.' : null
+      return comparisonFor(item.candidate, item.validation, selected?.candidate.method ?? null, eligible.includes(item), note)
+    })
+    if (!selected) return { engineVersion: 'current-v2', status: 'unsupported', method: null, reason: 'The flight log does not contain a physically usable mass trend.', observedMassRange: massRange, warnings: [], comparisons }
     const requested: [number, number] = limits ? [Math.max(massRange[0], limits[0]), Math.min(massRange[1], limits[1])] : massRange
     const mass = requested[0] < requested[1] ? solveMass(selected.candidate, targetAltitude, conditions, requested) : null
     const warnings: string[] = []
-    if (!learnedEligible) warnings.push('Using the conservative baseline until eight flights across three launch days are available.')
+    if (!learnedEligible) warnings.push('Using the conservative weather-adjusted physics baseline until eight flights across three launch days are available.')
     if (weatherSpread < 2) warnings.push('Logged weather has too little variation to validate weather effects.')
-    if (mass === null) return { engineVersion: 'current-v2', status: 'unsupported', method: selected.candidate.method, reason: `The ${targetAltitude.toFixed(0)} ft target is outside this model’s supported mass range.`, observedMassRange: requested, warnings }
+    if (mass === null) return { engineVersion: 'current-v2', status: 'unsupported', method: selected.candidate.method, reason: `The ${targetAltitude.toFixed(0)} ft target is outside this model’s supported mass range.`, observedMassRange: requested, warnings, comparisons }
     const expectedAltitude = selected.candidate.predict({ ...conditions, mass })
     const error80 = selected.validation?.residual80 ?? null
     return {
       engineVersion: 'current-v2', status: 'ready', method: selected.candidate.method, methodLabel: selected.candidate.label,
       recommendedMass: mass, expectedAltitude, interval: error80 === null ? null : [Math.max(0, expectedAltitude - error80), expectedAltitude + error80],
-      observedMassRange: requested, metrics: selected.validation?.metrics ?? { mae: NaN, r2: NaN, testedFlights: 0, launchDays: days, massCoverage: 0 },
+      observedMassRange: requested, metrics: selected.validation?.metrics ?? { mae: NaN, r2: NaN, testedFlights: 0, launchDays: days, massCoverage: 0 }, comparisons,
       features: selected.candidate.features, warnings,
+    }
+  },
+  predictDescent(inputFlights, conditions) {
+    const flights = inputFlights.filter(flight => valid(flight) && Number.isFinite(flight.descentTime) && flight.descentTime > 0 && flight.descentTime <= flight.flightTime)
+    const ratios = flights.map(flight => flight.descentTime / rawDescentSeconds(descentConditionsFor(flight))).filter(value => Number.isFinite(value) && value > 0)
+    const calibration = ratios.length ? Math.max(.55, Math.min(1.8, [...ratios].sort((a, b) => a - b)[Math.floor(ratios.length / 2)])) : 1
+    const expectedSeconds = Math.max(1, rawDescentSeconds(conditions) * calibration)
+    const heldOutErrors = flights.flatMap(flight => {
+      const training = flights.filter(item => item.date !== flight.date)
+      if (!training.length) return []
+      const trainingRatios = training.map(item => item.descentTime / rawDescentSeconds(descentConditionsFor(item))).sort((a, b) => a - b)
+      const foldCalibration = Math.max(.55, Math.min(1.8, trainingRatios[Math.floor(trainingRatios.length / 2)]))
+      return [Math.abs(rawDescentSeconds(descentConditionsFor(flight)) * foldCalibration - flight.descentTime)]
+    })
+    const marginOfError = quantile(heldOutErrors, .8)
+    return {
+      status: 'ready', method: ratios.length ? 'calibrated-physics' : 'physics-estimate', methodLabel: ratios.length ? 'Flight-calibrated parachute physics' : 'Parachute physics estimate',
+      expectedSeconds, interval: marginOfError === null ? null : [Math.max(1, expectedSeconds - marginOfError), expectedSeconds + marginOfError], marginOfError,
+      calibrationFlights: ratios.length, warnings: ratios.length ? [] : ['No complete descent records yet; this is an uncalibrated physics estimate.'],
     }
   },
 }
