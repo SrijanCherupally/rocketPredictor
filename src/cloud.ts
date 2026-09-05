@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Launch } from './analytics'
+import type { EngineVersion, WorkspacePreferences } from './predictionTypes'
 
 export type CloudLaunchRow = {
   user_id: string
@@ -23,6 +24,9 @@ export type CloudLaunchRow = {
 export type CloudPreferences = {
   units: 'imperial' | 'metric'
   targetAltitude: number
+  plannerMinMass: number
+  plannerMaxMass: number
+  engineVersion: EngineVersion
 }
 
 export class CloudConflictError extends Error {
@@ -66,26 +70,35 @@ const launchToRow = (userId: string, launch: Launch) => ({
 })
 
 export async function fetchWorkspace(client: Client, userId: string) {
+  const pageSize = 500
+  const allRows: CloudLaunchRow[] = []
+  for (let from = 0; ; from += pageSize) {
+    const result = await client.from('launches').select('*').eq('user_id', userId).order('date', { ascending: true }).order('launch_id', { ascending: true }).range(from, from + pageSize - 1)
+    if (result.error) throw result.error
+    const page = (result.data ?? []) as CloudLaunchRow[]
+    allRows.push(...page)
+    if (page.length < pageSize) break
+  }
   const [launchResult, preferenceResult] = await Promise.all([
-    client.from('launches').select('*').eq('user_id', userId).order('date', { ascending: true }),
+    Promise.resolve({ data: allRows, error: null }),
     client.from('user_preferences').select('*').eq('user_id', userId).maybeSingle(),
   ])
   if (launchResult.error) throw launchResult.error
   if (preferenceResult.error) throw preferenceResult.error
   const rows = (launchResult.data ?? []) as CloudLaunchRow[]
-  const preference = preferenceResult.data as { units?: 'imperial' | 'metric'; target_altitude?: number } | null
+  const preference = preferenceResult.data as { units?: 'imperial' | 'metric'; target_altitude?: number; planner_min_mass?: number; planner_max_mass?: number; engine_version?: EngineVersion } | null
   return {
     launches: rows.map(rowToLaunch),
     versions: Object.fromEntries(rows.map((row) => [row.launch_id, row.version])),
     preferences: preference
-      ? { units: preference.units ?? 'imperial', targetAltitude: preference.target_altitude ?? 800 }
+      ? { units: preference.units ?? 'imperial', targetAltitude: preference.target_altitude ?? 800, plannerMinMass: preference.planner_min_mass ?? 500, plannerMaxMass: preference.planner_max_mass ?? 700, engineVersion: preference.engine_version ?? 'current-v2' }
       : null,
   }
 }
 
 export async function importLaunches(client: Client, userId: string, launches: Launch[]) {
   if (launches.length === 0) return
-  const { error } = await client.from('launches').upsert(launches.map((launch) => launchToRow(userId, launch)), { onConflict: 'user_id,launch_id' })
+  const { error } = await client.from('launches').upsert(launches.map((launch) => launchToRow(userId, launch)), { onConflict: 'user_id,launch_id', ignoreDuplicates: true })
   if (error) throw error
 }
 
@@ -109,6 +122,8 @@ export async function deleteLaunch(client: Client, userId: string, launchId: str
 }
 
 export async function savePreferences(client: Client, userId: string, preferences: CloudPreferences) {
-  const { error } = await client.from('user_preferences').upsert({ user_id: userId, units: preferences.units, target_altitude: preferences.targetAltitude }, { onConflict: 'user_id' })
+  const { error } = await client.from('user_preferences').upsert({ user_id: userId, units: preferences.units, target_altitude: preferences.targetAltitude, planner_min_mass: preferences.plannerMinMass, planner_max_mass: preferences.plannerMaxMass, engine_version: preferences.engineVersion }, { onConflict: 'user_id' })
   if (error) throw error
 }
+
+export const defaultPreferences: WorkspacePreferences = { units: 'imperial', targetAltitude: 800, plannerMinMass: 500, plannerMaxMass: 700, engineVersion: 'current-v2' }

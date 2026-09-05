@@ -5,6 +5,7 @@ import { bestResult, descriptions, methodNames, modelLabel, massWeatherEffect, u
 import { MassRangeControl } from './MassRangeControl'
 import { clampMassRange } from './massRange'
 import { seedLaunches } from './seed'
+import { legacyEngine } from './legacyEngine'
 
 type Suites = { descent: Suite; altitude: Suite; error?: string }
 type Props = { launches: Launch[]; conditions: DescentConditions; setConditions: React.Dispatch<React.SetStateAction<DescentConditions>>; targetAltitude: number; units: 'imperial' | 'metric' }
@@ -16,18 +17,19 @@ function ConditionFields({ fields, conditions, setConditions, className = '' }: 
 }
 
 export function PredictionLab({ launches, ...props }: Props) {
-  const demoCount = launches.filter(launch => seedLaunches.some(seed => Object.entries(seed).every(([key, value]) => launch[key as keyof Launch] === value))).length
+  const legacyLaunches = useMemo(() => legacyEngine.toLegacyLaunches(launches), [launches])
+  const demoCount = legacyLaunches.filter(launch => seedLaunches.some(seed => Object.entries(seed).every(([key, value]) => launch[key as keyof Launch] === value))).length
   const [result, setResult] = useState<{ source: Launch[]; suites?: Suites; error?: string } | null>(null)
   useEffect(() => {
     const worker = new Worker(new URL('./experiments.worker.ts', import.meta.url), { type: 'module' })
-    worker.onmessage = (event: MessageEvent<Suites>) => setResult({ source: launches, suites: event.data.error ? undefined : event.data, error: event.data.error })
-    worker.onerror = () => setResult({ source: launches, error: 'Prediction experiments could not load. Reload to retry; original models remain available.' })
-    worker.postMessage(launches)
+    worker.onmessage = (event: MessageEvent<Suites>) => setResult({ source: legacyLaunches, suites: event.data.error ? undefined : event.data, error: event.data.error })
+    worker.onerror = () => setResult({ source: legacyLaunches, error: 'Prediction experiments could not load. Reload to retry; original models remain available.' })
+    worker.postMessage(legacyLaunches)
     return () => worker.terminate()
-  }, [launches])
-  const ready = result?.source === launches
+  }, [legacyLaunches])
+  const ready = result?.source === legacyLaunches
   return <section className="prediction-lab" aria-busy={!ready}>
-    <div className="lab-intro"><div><p className="eyebrow">EXPERIMENTAL MODELS · ORIGINALS PRESERVED</p><h2>Flight prediction lab</h2><p>Compare algorithms on the selected flight dates. Zoom changes the view; it never changes model training.</p></div><span className="lab-pill">{launches.length} logged flights</span></div>
+    <div className="lab-intro"><div><p className="eyebrow">EXPERIMENTAL MODELS · ORIGINALS PRESERVED</p><h2>Flight prediction lab</h2><p>Compare algorithms on the selected flight dates. Zoom changes the view; it never changes model training.</p></div><span className="lab-pill">{legacyLaunches.length} logged flights</span></div>
     {demoCount > 0 && <p className="lab-notice">{demoCount} records match the bundled example flights. These results demonstrate the models; validate with your own comparable flights before using the estimates.</p>}
     {!ready ? <p role="status" className="lab-notice">Training models and testing unseen launch dates…</p> : result.error ? <p role="alert" className="lab-notice">{result.error}</p> : result.suites && <LabResults {...props} suites={result.suites} />}
   </section>
@@ -104,7 +106,7 @@ function ModelSelect({ label, results, value, setValue, task }: { label: string;
 }
 
 function exportValidation(suite: Suite) {
-  const report = { units: { altitude: 'ft', mass: 'g', descent: 's', wind: 'mph', pressure: 'inHg', temperature: 'F', parachute: 'in', humidity: '%' }, validation: 'Grouped by launch date; scaling and fitting use training folds only. Finite nonpositive forecasts count as errors.', ...suite }
+  const report = { engineVersion: 'legacy-v1', units: { altitude: 'ft', mass: 'g', descent: 's', wind: 'mph', pressure: 'inHg', temperature: 'F', parachute: 'in', humidity: '%' }, validation: 'Grouped by launch date; scaling and fitting use training folds only. Finite nonpositive forecasts count as errors.', ...suite }
   const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }))
   const link = document.createElement('a'); link.href = url; link.download = `apexFlite-${suite.task}-validation.json`; link.click()
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)

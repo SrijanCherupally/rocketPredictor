@@ -7,6 +7,13 @@ export default defineConfig(({ mode }) => {
   return {
     base: '/',
     plugins: [react()],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: (moduleId) => moduleId.includes('/node_modules/recharts/') ? 'charts' : moduleId.includes('/node_modules/@supabase/') ? 'cloud' : undefined,
+        },
+      },
+    },
     define: {
       'import.meta.env.NEXT_PUBLIC_SUPABASE_URL': JSON.stringify(env.NEXT_PUBLIC_SUPABASE_URL),
       'import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY': JSON.stringify(env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY),

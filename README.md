@@ -16,8 +16,8 @@ The live site is hosted on Vercel.
 - Set a target altitude, with **800 ft** as the starting target
 - Switch between Imperial and Metric units
 - See recent flights and your full flight history
-- Get weight suggestions based on previous flights
-- Compare simple and weather-aware predictions with confidence intervals
+- Plan an altitude-focused launch mass using expected weather and held-out validation
+- Switch to Legacy mode whenever you need the original algorithms and experiment workflow
 - View descent time predictions based on flight conditions
 - Review prediction accuracy and sample size
 - Explore insights dashboard with flight trends and variable impact analysis
@@ -60,7 +60,7 @@ Cloud mode uses Supabase for:
 - Keeping each user's records private
 - Updating the app when the same account is used on another device
 
-The database setup is saved in [`supabase/migrations/0001_cloud_workspace.sql`](supabase/migrations/0001_cloud_workspace.sql).
+Database migrations are saved in [`supabase/migrations`](supabase/migrations). Apply all migrations in filename order. Migration `0003` closes the dormant multi-rocket security policy and adds synchronized planner preferences without deleting existing data.
 
 ### Environment variables
 
@@ -96,9 +96,14 @@ Important storage details:
 
 ## How predictions work
 
-The **Experiments** tab includes a **Flight prediction lab** with separate physics, ridge,
-nearest-flight and neural-network experiments for descent and rocket mass. The original
-algorithms remain unchanged and available for comparison. The lab validates on held-out
+The default **Launch Planner** uses the separate Current v2 engine. It automatically selects
+an eligible altitude model using launch-day-grouped held-out validation, responds to expected
+wind, pressure, humidity and temperature, and refuses to recommend outside recorded mass support.
+
+**Legacy mode** is available in Settings. It restores the original **Flight prediction lab**
+with its physics, ridge, nearest-flight and neural-network experiments. The original
+`analytics.ts` and `experiments.ts` files are protected by source hashes and remain unchanged.
+The legacy lab validates on held-out
 launch dates, shows actual flights, and restricts mass recommendations to logged support.
 See [the app overview and experiment report](docs/APP-OVERVIEW.md) for methods, benchmark
 results, caveats, and the bugs addressed. Overview and Experiments share entered weather;
@@ -127,14 +132,18 @@ The descent time prediction estimates how long a parachute descent will take bas
 | `npm run dev` | Starts the local development app |
 | `npm run build` | Checks the code and creates the production files |
 | `npm run lint` | Checks the code for common problems |
+| `npm run typecheck` | Checks TypeScript without creating a production bundle |
 | `npm run preview` | Lets you preview the production build locally |
-| `npm test` | Checks model invariants, validation isolation and range handling |
+| `npm test` | Verifies Legacy v1 hashes and runs both engine test suites |
+| `npm run test:legacy` | Verifies the original algorithm files are byte-for-byte unchanged |
+| `npm run test:browser` | Runs the cross-device and responsive browser smoke suite |
 | `npm run benchmark` | Compares models on the bundled example flights |
 
 Before publishing changes, run:
 
 ```bash
 npm run lint
+npm test
 npm run build
 ```
 
@@ -143,8 +152,11 @@ npm run build
 ```text
 .
 ├── src/
-│   ├── App.tsx          # Main dashboard and account screens
-│   ├── analytics.ts     # Prediction calculations and regression models
+│   ├── App.tsx          # Application shell, dashboard, flights and settings
+│   ├── LaunchPlanner.tsx # Current v2 weather-aware planner
+│   ├── predictionV2.ts  # Separate current prediction engine
+│   ├── analytics.ts     # Frozen Legacy v1 calculations
+│   ├── experiments.ts   # Frozen Legacy v1 experiment engine
 │   ├── cloud.ts         # Cloud saving and syncing
 │   ├── supabase.ts      # Supabase connection and sign-in
 │   ├── seed.ts          # Starter demo flights
