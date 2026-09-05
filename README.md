@@ -96,12 +96,17 @@ Important storage details:
 
 ## How predictions work
 
-The overview now includes a **Flight prediction lab** with separate physics, ridge,
+The **Experiments** tab includes a **Flight prediction lab** with separate physics, ridge,
 nearest-flight and neural-network experiments for descent and rocket mass. The original
 algorithms remain unchanged and available for comparison. The lab validates on held-out
 launch dates, shows actual flights, and restricts mass recommendations to logged support.
 See [the app overview and experiment report](docs/APP-OVERVIEW.md) for methods, benchmark
-results, caveats, and the bugs addressed.
+results, caveats, and the bugs addressed. Overview and Experiments share entered weather;
+mass-only models explicitly identify that they do not use weather. See the
+[regression investigation](docs/REGRESSION-INVESTIGATION.md) for the reproduced 449.1 ft
+held-out error and why it differs from the original model's training error.
+The neural option now works with eight flights: a small network learns a bounded weather
+correction around a physical trend, including validation folds containing four records.
 
 ### Basic prediction (altitude)
 

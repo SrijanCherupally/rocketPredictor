@@ -317,3 +317,12 @@ nav { display: grid; gap: 4px; } nav button, .sidebar-bottom > button { border: 
   .mass-range-ticks span:nth-child(2) { max-width: 130px; text-align: center; }
 }
 @media (max-width: 440px) { .prediction-lab, .baseline-details { width: calc(100% - 24px); }.model-footer { grid-template-columns: 1.5fr 1fr 1fr; } }
+.lab-comparison-heading { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+.lab-comparison-heading p { color: var(--color-text-secondary); font-size: 12px; line-height: 1.7; }
+.lab-comparison-heading button { flex-shrink: 0; font-size: 11px; }
+.lab-weather-effect { margin: 0 24px 20px; padding: 14px 16px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-bg-tertiary); font-size: 12px; }
+.lab-weather-effect p { line-height: 1.7; margin: 7px 0; color: var(--color-text-secondary); }
+.lab-weather-effect small { line-height: 1.7; color: var(--color-text-muted); }
+.prediction-lab td.lab-reason { white-space: normal; min-width: 200px; }
+.lab-fold-table { margin-top: 14px; }
+@media (max-width: 760px) { .lab-comparison-heading { align-items: flex-start; flex-direction: column; gap: 0; }.lab-weather-effect { margin-left: 18px; margin-right: 18px; } }

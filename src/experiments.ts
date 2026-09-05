@@ -11,8 +11,10 @@ export const descriptions: Record<Method, string> = {
   physics: 'Descent: terminal-speed scaling calibrated to the median flight. Altitude: empirical inverse-mass trend, constrained to decrease with mass.',
   ridge: 'Standardized regression with shrinkage; descent learns a correction to terminal-speed scaling.',
   neighbors: 'Distance-weighted average of five similar flights; descent transfers their physics-normalized recovery times.',
-  neural: 'Small tanh network with six hidden units, trained with backpropagation and L2 regularization. Requires 24 flights and sufficient validation data.',
+  neural: 'Small-data neural network: three tanh units learn a bounded weather correction to a calibrated physical trend. Trains from four flights, so an eight-flight log can also be validated by launch date.',
 }
+export const usesWeather = (method: Method, task: Task) => task === 'descent' || (method !== 'linear' && method !== 'physics')
+export const modelLabel = (method: Method, task: Task) => method === 'baseline' ? (task === 'altitude' ? 'Original weather regression' : 'Original descent regression') : method === 'physics' && task === 'altitude' ? 'Inverse-mass fit' : methodNames[method]
 const average = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length)
 const medianValue = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return (s[Math.floor((s.length - 1) / 2)] + s[Math.floor(s.length / 2)]) / 2 }
 const dot = (a: number[], b: number[]) => a.reduce((s, v, i) => s + v * b[i], 0)
@@ -40,11 +42,15 @@ export function physicsTime(c: DescentConditions) {
 const features = (c: DescentConditions, task: Task) => task === 'descent'
   ? [Math.log(c.mass), Math.log(c.altitude), Math.log(c.parachuteSize), c.wind, c.pressure, c.humidity, c.temperature]
   : [c.mass, c.wind, c.pressure, c.humidity, c.temperature]
+const neuralFeatures = (c: DescentConditions) => [c.wind, c.pressure, c.humidity, c.temperature]
+// Avoid magnifying a tiny measured weather spread into a huge unseen-day input.
+const neuralScaleFloors = [2, .1, 10, 10]
+const neuralCorrectionLimit = .2 // Bound log correction: exp(±.2), not a confidence interval.
 
 export type ExperimentModel = {
   task: Task; method: Method; sampleSize: number; means: number[]; scales: number[]
   weights: number[]; rows: number[][]; targets: number[]; center: number; spread: number
-  hidden: number[][]; output: number[]; legacy?: Model | DescentModel
+  hidden: number[][]; output: number[]; legacy?: Model | DescentModel; base?: ExperimentModel
 }
 function solve(a: number[][], b: number[]) {
   const m = a.map((row, i) => [...row, b[i]])
@@ -70,7 +76,7 @@ function ridge(rows: number[][], target: number[], penalty: number) {
 
 export function trainModel(flights: Launch[], task: Task, method: Method): ExperimentModel | null {
   const data = usableFlights(flights, task)
-  if (data.length < (method === 'neural' ? 24 : 4) || (method === 'linear' && task === 'descent')) return null
+  if (data.length < 4 || (method === 'linear' && task === 'descent')) return null
   const model: ExperimentModel = { task, method, sampleSize: data.length, means: [], scales: [], weights: [], rows: [], targets: [], hidden: [], output: [], center: 0, spread: 1 }
   if (method === 'baseline' || method === 'linear') {
     const legacy = task === 'descent' ? descentRegression(data) : method === 'linear' ? linearRegression(data.map(l => ({ x: l.rocketMass, y: l.altitude }))) : adjustedRegression(data)
@@ -88,13 +94,19 @@ export function trainModel(flights: Launch[], task: Task, method: Method): Exper
     }
     return model
   }
-  const raw = data.map(l => features(conditionsFor(l), task))
+  if (method === 'neural') {
+    model.base = trainModel(data, task, 'physics') ?? { ...model, method: 'physics', weights: [average(data.map(l => l.altitude)), 0] }
+    // An inverse-mass fit can cross zero on unusual data. Use a constant positive
+    // altitude prior in that case, rather than train on invalid log residuals.
+    if (task === 'altitude' && data.some(l => predictModel(model.base!, conditionsFor(l)) === null)) model.base = { ...model, base: undefined, method: 'physics', weights: [average(data.map(l => l.altitude)), 0] }
+  }
+  const raw = data.map(l => method === 'neural' ? neuralFeatures(conditionsFor(l)) : features(conditionsFor(l), task))
   model.means = raw[0].map((_, i) => average(raw.map(row => row[i])))
-  model.scales = model.means.map((m, i) => Math.sqrt(average(raw.map(row => (row[i] - m) ** 2))) || 1)
-  model.rows = raw.map(row => row.map((v, i) => (v - model.means[i]) / model.scales[i]))
-  model.targets = data.map(l => task === 'descent' ? Math.log(l.descentTime / physicsTime(conditionsFor(l))) : l.altitude)
+  model.scales = model.means.map((m, i) => method === 'neural' ? Math.max(neuralScaleFloors[i], Math.sqrt(average(raw.map(row => (row[i] - m) ** 2)))) : Math.sqrt(average(raw.map(row => (row[i] - m) ** 2))) || 1)
+  model.rows = raw.map(row => row.map((v, i) => method === 'neural' ? Math.tanh((v - model.means[i]) / model.scales[i]) : (v - model.means[i]) / model.scales[i]))
+  model.targets = data.map(l => method === 'neural' ? Math.log((task === 'descent' ? l.descentTime : l.altitude) / predictModel(model.base!, conditionsFor(l))!) : task === 'descent' ? Math.log(l.descentTime / physicsTime(conditionsFor(l))) : l.altitude)
   model.center = average(model.targets)
-  model.spread = Math.sqrt(average(model.targets.map(y => (y - model.center) ** 2))) || 1
+  model.spread = method === 'neural' ? Math.max(.01, Math.sqrt(average(model.targets.map(y => (y - model.center) ** 2)))) : Math.sqrt(average(model.targets.map(y => (y - model.center) ** 2))) || 1
   if (method === 'ridge') {
     const weights = ridge(model.rows, model.targets, .3)
     return weights ? { ...model, weights, rows: [], targets: [] } : null
@@ -103,31 +115,39 @@ export function trainModel(flights: Launch[], task: Task, method: Method): Exper
     // Fixed seed/hyperparameters: reproducible, never selected on held-out targets.
     let seed = 42
     const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296 - .5 }
-    const x = model.rows.map(row => [1, ...row]); const y = model.targets.map(v => (v - model.center) / model.spread)
-    model.hidden = Array.from({ length: 6 }, () => x[0].map(() => random() * .35))
-    model.output = Array.from({ length: 7 }, () => random() * .2)
-    for (let epoch = 0; epoch < 240; epoch++) {
+    const x = model.rows.map(row => [1, ...row])
+    model.hidden = Array.from({ length: 3 }, () => x[0].map((_, column) => column > 0 && x.every(row => Math.abs(row[column]) < 1e-12) ? 0 : random() * .35))
+    model.output = Array.from({ length: 4 }, () => random() * .2)
+    for (let epoch = 0; epoch < 320; epoch++) {
       const gh = model.hidden.map(row => row.map(() => 0)); const go = model.output.map(() => 0)
       x.forEach((row, i) => {
         const hidden = model.hidden.map(w => Math.tanh(dot(row, w))); const activations = [1, ...hidden]
-        const error = dot(activations, model.output) - y[i]
+        const bounded = Math.tanh((model.center + model.spread * dot(activations, model.output)) / neuralCorrectionLimit)
+        const error = (neuralCorrectionLimit * bounded - model.targets[i]) / model.spread * (1 - bounded * bounded)
         go.forEach((_, j) => { go[j] += error * activations[j] / x.length })
         hidden.forEach((a, j) => row.forEach((v, k) => { gh[j][k] += error * model.output[j + 1] * (1 - a * a) * v / x.length }))
       })
-      model.output = model.output.map((v, i) => v - .035 * (go[i] + (i ? .03 * v : 0)))
-      model.hidden = model.hidden.map((row, j) => row.map((v, k) => v - .035 * (gh[j][k] + (k ? .03 * v : 0))))
+      model.output = model.output.map((v, i) => v - .035 * (go[i] + (i ? .15 * v : 0)))
+      model.hidden = model.hidden.map((row, j) => row.map((v, k) => v - .035 * (gh[j][k] + (k ? .15 * v : 0))))
     }
     model.rows = []; model.targets = []
   }
   return model
 }
 
-export function predictModel(model: ExperimentModel, c: DescentConditions): number | null {
+export function predictModel(model: ExperimentModel, c: DescentConditions, purpose: 'scenario' | 'validation' = 'scenario'): number | null {
   if (!validConditions(c)) return null
   let y: number
   if (model.legacy) y = model.task === 'descent' ? predictDescentTime(model.legacy as DescentModel, c) : model.method === 'linear'
     ? model.legacy.intercept + model.legacy.coefficients[0] * c.mass : predictAdjustedAltitude(model.legacy, c.mass, c)
   else if (model.method === 'physics') y = model.task === 'descent' ? physicsTime(c) * model.weights[0] : model.weights[0] + model.weights[1] / c.mass
+  else if (model.method === 'neural' && model.base) {
+    const base = predictModel(model.base, c, purpose)
+    if (base === null) return null
+    const row = neuralFeatures(c).map((v, i) => Math.tanh((v - model.means[i]) / model.scales[i]))
+    const correction = model.center + model.spread * dot([1, ...model.hidden.map(w => Math.tanh(dot([1, ...row], w)))], model.output)
+    y = base * Math.exp(neuralCorrectionLimit * Math.tanh(correction / neuralCorrectionLimit))
+  }
   else {
     const row = features(c, model.task).map((v, i) => (v - model.means[i]) / model.scales[i])
     if (model.method === 'ridge') y = dot([1, ...row], model.weights)
@@ -139,7 +159,9 @@ export function predictModel(model: ExperimentModel, c: DescentConditions): numb
     }
     if (model.task === 'descent') y = physicsTime(c) * Math.exp(y)
   }
-  return Number.isFinite(y) && y > 0 ? y : null
+  // A physically impossible finite forecast is still a validation error. Dropping
+  // negative regression predictions would selectively hide the worst failures.
+  return Number.isFinite(y) && (purpose === 'validation' || y > 0) ? y : null
 }
 
 export type MassSolution = { mass: number | null; reason: string }
@@ -162,8 +184,9 @@ export function solveMass(model: ExperimentModel, target: number, c: DescentCond
   return { mass: (lo + hi) / 2, reason: 'Within logged masses; assumes the same rocket and motor configuration.' }
 }
 
-export type ValidationRow = { id: string; date: string; actual: number; predicted: number; residual: number }
-export type ExperimentResult = { method: Method; model: ExperimentModel | null; mae: number | null; rmse: number | null; r2: number | null; error80: number | null; massMae: number | null; massCount: number; tested: number; total: number; rows: ValidationRow[] }
+export type ValidationRow = { id: string; date: string; actual: number; predicted: number; residual: number; fold: number; trainingCount: number; recordedMass: number; predictedMass: number | null; massError: number | null; massReason: string; outsideTraining: string[] }
+export type ValidationFold = { fold: number; trainingCount: number; testCount: number; scoredCount: number; reason: string }
+export type ExperimentResult = { method: Method; model: ExperimentModel | null; trainingMae: number | null; trainingCount: number; mae: number | null; rmse: number | null; r2: number | null; error80: number | null; massMae: number | null; massCount: number; tested: number; total: number; rows: ValidationRow[]; validationFolds: ValidationFold[] }
 export type Suite = { task: Task; flights: Launch[]; excluded: number; folds: number; results: ExperimentResult[] }
 export function benchmark(flights: Launch[], task: Task): Suite {
   const data = usableFlights(flights, task).sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
@@ -171,26 +194,35 @@ export function benchmark(flights: Launch[], task: Task): Suite {
   const foldOf = new Map(dates.map((date, i) => [date, i % Math.max(1, folds)]))
   const results = methods.filter(method => task === 'altitude' || method !== 'linear').map(method => {
     const rows: ValidationRow[] = []; const massErrors: number[] = []
+    const validationFolds: ValidationFold[] = []
     if (folds >= 3) for (let fold = 0; fold < folds; fold++) {
       const train = data.filter(l => foldOf.get(l.date) !== fold); const test = data.filter(l => foldOf.get(l.date) === fold)
       const model = trainModel(train, task, method)
+      const diagnostic = { fold: fold + 1, trainingCount: train.length, testCount: test.length, scoredCount: 0, reason: model ? '' : 'Insufficient training data or model could not fit.' }
+      validationFolds.push(diagnostic)
       if (!model) continue
       for (const l of test) {
-        const predicted = predictModel(model, conditionsFor(l)); const actual = task === 'descent' ? l.descentTime : l.altitude
-        if (predicted === null) continue
-        rows.push({ id: l.id, date: l.date, actual, predicted, residual: actual - predicted })
+        const predicted = predictModel(model, conditionsFor(l), 'validation'); const actual = task === 'descent' ? l.descentTime : l.altitude
+        if (predicted === null) { diagnostic.reason = 'Some forecasts were nonfinite; see scored counts.'; continue }
+        diagnostic.scoredCount++
+        const row: ValidationRow = { id: l.id, date: l.date, actual, predicted, residual: actual - predicted, fold: fold + 1, trainingCount: train.length, recordedMass: l.rocketMass, predictedMass: null, massError: null, massReason: '', outsideTraining: outsideCoverage(train, conditionsFor(l), task) }
+        if (task === 'altitude' && (l.rocketMass < Math.min(...train.map(f => f.rocketMass)) || l.rocketMass > Math.max(...train.map(f => f.rocketMass)))) row.outsideTraining.push('mass')
         if (task === 'altitude') {
           const solution = solveMass(model, l.altitude, conditionsFor(l), [Math.min(...train.map(l => l.rocketMass)), Math.max(...train.map(l => l.rocketMass))])
-          if (solution.mass !== null) massErrors.push(Math.abs(solution.mass - l.rocketMass))
+          row.predictedMass = solution.mass; row.massReason = solution.reason
+          if (solution.mass !== null) { row.massError = Math.abs(solution.mass - l.rocketMass); massErrors.push(row.massError) }
         }
+        rows.push(row)
       }
     }
     const errors = rows.map(r => Math.abs(r.residual)).sort((a, b) => a - b)
     const mean = average(rows.map(r => r.actual)); const variance = rows.reduce((s, r) => s + (r.actual - mean) ** 2, 0)
-    return { method, model: trainModel(data, task, method), mae: rows.length ? average(errors) : null, rmse: rows.length ? Math.sqrt(average(errors.map(v => v * v))) : null,
+    const fitted = trainModel(data, task, method)
+    const trainingErrors = fitted ? data.flatMap(l => { const predicted = predictModel(fitted, conditionsFor(l), 'validation'); return predicted === null ? [] : [Math.abs((task === 'descent' ? l.descentTime : l.altitude) - predicted)] }) : []
+    return { method, model: fitted, trainingMae: trainingErrors.length ? average(trainingErrors) : null, trainingCount: trainingErrors.length, mae: rows.length ? average(errors) : null, rmse: rows.length ? Math.sqrt(average(errors.map(v => v * v))) : null,
       r2: variance > 0 ? 1 - rows.reduce((s, r) => s + r.residual ** 2, 0) / variance : null,
       error80: rows.length >= 8 ? errors[Math.ceil(.8 * errors.length) - 1] : null,
-      massMae: massErrors.length ? average(massErrors) : null, massCount: massErrors.length, tested: rows.length, total: data.length, rows }
+      massMae: massErrors.length ? average(massErrors) : null, massCount: massErrors.length, tested: rows.length, total: data.length, rows, validationFolds }
   })
   return { task, flights: data, excluded: flights.length - data.length, folds, results }
 }
@@ -200,4 +232,13 @@ export function bestResult(suite: Suite) {
 export function outsideCoverage(flights: Launch[], c: DescentConditions, task: Task) {
   const keys: Array<keyof Omit<DescentConditions, 'flightTime'>> = task === 'descent' ? ['mass', 'altitude', 'parachuteSize', 'wind', 'pressure', 'humidity', 'temperature'] : ['wind', 'pressure', 'humidity', 'temperature']
   return keys.filter(key => flights.length && (c[key] < Math.min(...flights.map(l => conditionsFor(l)[key])) - 1e-8 || c[key] > Math.max(...flights.map(l => conditionsFor(l)[key])) + 1e-8))
+}
+
+export function massWeatherEffect(model: ExperimentModel, flights: Launch[], target: number, conditions: DescentConditions) {
+  const bounds: [number, number] = [Math.min(...flights.map(l => l.rocketMass)), Math.max(...flights.map(l => l.rocketMass))]
+  if (!flights.length) return { referenceMass: null, delta: null }
+  const reference = { ...conditions, wind: medianValue(flights.map(l => l.windSpeed)), pressure: medianValue(flights.map(l => l.airPressure)), humidity: medianValue(flights.map(l => l.humidity)), temperature: medianValue(flights.map(l => l.temperature)) }
+  const current = solveMass(model, target, conditions, bounds)
+  const baseline = solveMass(model, target, reference, bounds)
+  return { referenceMass: baseline.mass, delta: current.mass === null || baseline.mass === null ? null : current.mass - baseline.mass }
 }
