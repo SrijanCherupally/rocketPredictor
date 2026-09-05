@@ -326,3 +326,51 @@ nav { display: grid; gap: 4px; } nav button, .sidebar-bottom > button { border: 
 .prediction-lab td.lab-reason { white-space: normal; min-width: 200px; }
 .lab-fold-table { margin-top: 14px; }
 @media (max-width: 760px) { .lab-comparison-heading { align-items: flex-start; flex-direction: column; gap: 0; }.lab-weather-effect { margin-left: 18px; margin-right: 18px; } }
+
+/* Experiments workflow: keep planning inputs with the result they control. */
+.lab-stage { border-top: 1px solid var(--color-border); }
+.lab-stage .lab-section-heading { border-top: 0; padding-bottom: 18px; }
+.lab-step { margin: 0 0 7px !important; color: var(--color-accent-purple) !important; font: 600 9px 'DM Mono', monospace !important; letter-spacing: .75px; }
+.lab-mass-planner { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(250px, .8fr); gap: 16px; margin: 0 24px 16px; }
+.lab-control-card { min-width: 0; padding: 17px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-bg-tertiary); }
+.lab-control-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.lab-control-heading span { display: block; margin-bottom: 4px; color: var(--color-text-muted); font: 9px 'DM Mono', monospace; letter-spacing: .6px; text-transform: uppercase; }
+.lab-control-heading b { color: var(--color-text-primary); font-size: 14px; }
+.lab-control-heading em { padding: 5px 8px; border-radius: 20px; color: var(--color-status-success); background: var(--color-bg-secondary); font-size: 10px; font-style: normal; white-space: nowrap; }
+.lab-control-card > p { margin: 12px 0 0; color: var(--color-text-muted); font-size: 11px; line-height: 1.55; }
+.lab-control-card .lab-inputs { padding: 0; }
+.lab-weather-inputs { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.lab-primary-result { display: flex; flex-direction: column; justify-content: center; min-height: 150px; padding: 22px; overflow: hidden; border: 1px solid #cfc2f2; border-radius: 9px; background: linear-gradient(145deg, var(--color-accent-light-purple), var(--color-bg-tertiary)); }
+.lab-primary-result span { color: var(--color-text-secondary); font-size: 11px; }
+.lab-primary-result strong { margin: 7px 0 9px; color: var(--color-text-primary); font: 600 34px 'Playfair Display', serif; font-variant-numeric: tabular-nums; }
+.lab-primary-result small { color: var(--color-text-muted); font-size: 11px; line-height: 1.55; }
+.lab-validation-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.lab-recovery-card { margin: 0 24px 18px; }
+.lab-recovery-inputs { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.lab-comparison-disclosure { margin: 8px 24px 22px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-bg-tertiary); overflow: hidden; }
+.lab-comparison-disclosure > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 17px; list-style: none; }
+.lab-comparison-disclosure > summary::-webkit-details-marker { display: none; }
+.lab-comparison-disclosure > summary::after { content: '+'; flex: 0 0 auto; color: var(--color-accent-purple); font-size: 18px; line-height: 1; }
+.lab-comparison-disclosure[open] > summary::after { content: '−'; }
+.lab-comparison-disclosure > summary span { color: var(--color-text-primary); font-size: 12px; font-weight: 600; }
+.lab-comparison-disclosure > summary small { margin-left: auto; color: var(--color-text-muted); font-size: 11px; }
+.lab-comparison-disclosure[open] > summary { border-bottom: 1px solid var(--color-border); }
+.lab-comparison-disclosure .lab-comparison { padding-top: 8px; background: var(--color-bg-secondary); }
+
+@media (max-width: 980px) {
+  .lab-mass-planner { grid-template-columns: 1fr; }
+  .lab-primary-result { min-height: 0; }
+  .lab-weather-inputs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .lab-mass-planner { margin-left: 18px; margin-right: 18px; }
+  .lab-recovery-card { margin-left: 18px; margin-right: 18px; }
+  .lab-comparison-disclosure { margin-left: 18px; margin-right: 18px; }
+  .lab-control-heading { align-items: flex-start; flex-direction: column; }
+  .lab-validation-summary { grid-template-columns: 1fr; }
+  .lab-comparison-disclosure > summary { align-items: flex-start; }
+  .lab-comparison-disclosure > summary small { display: none; }
+}
+@media (max-width: 440px) {
+  .lab-weather-inputs, .lab-recovery-inputs { grid-template-columns: 1fr; }
+}
