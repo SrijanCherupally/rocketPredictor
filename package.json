@@ -8,27 +8,30 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "node scripts/test.mjs",
+    "test": "npm run test:legacy && node scripts/test.mjs",
+    "test:legacy": "node scripts/verify-legacy.mjs",
+    "test:browser": "node scripts/browser-smoke.mjs",
+    "typecheck": "tsc -b --pretty false",
     "benchmark": "node scripts/test.mjs --benchmark"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.112.4",
-    "@vitejs/plugin-react": "latest",
-    "lucide-react": "^1.34.0",
-    "react": "latest",
-    "react-dom": "latest",
-    "recharts": "^3.10.1",
-    "typescript": "latest",
-    "vite": "latest"
+    "@supabase/supabase-js": "2.112.4",
+    "lucide-react": "1.34.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "recharts": "3.10.1"
   },
   "devDependencies": {
-    "@eslint/js": "latest",
+    "@eslint/js": "10.0.1",
     "@types/node": "^26.4.0",
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
-    "eslint": "latest",
-    "eslint-plugin-react-hooks": "latest",
-    "eslint-plugin-react-refresh": "latest",
-    "typescript-eslint": "latest"
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "6.1.0",
+    "eslint": "10.9.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.5",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.68.0",
+    "vite": "8.2.2"
   }
 }

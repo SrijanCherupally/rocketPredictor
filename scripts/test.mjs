@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process'
 
 const folder = mkdtempSync(join(tmpdir(), 'apexflite-tests-'))
 try {
-  for (const name of ['analytics', 'experiments', 'massRange', 'seed']) {
+  for (const name of ['analytics', 'experiments', 'massRange', 'seed', 'predictionV2']) {
     const source = readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8')
     const output = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText.replace(/from '(\.\/[^']+)'/g, "from '$1.mjs'")
     writeFileSync(join(folder, `${name}.mjs`), output)
@@ -27,9 +27,8 @@ try {
       if (file) console.table(suite.results[0].rows.map(r => ({ id: r.id, fold: r.fold, trainedOn: r.trainingCount, actual: r.actual, predicted: r.predicted.toFixed(2), absoluteError: Math.abs(r.residual).toFixed(2), mass: r.predictedMass?.toFixed(2) ?? 'unsupported' })))
     }
   } else {
-    const source = readFileSync(new URL('../tests/experiments.test.mjs', import.meta.url), 'utf8')
-    writeFileSync(join(folder, 'experiments.test.mjs'), source)
-    const result = spawnSync(process.execPath, ['--test', join(folder, 'experiments.test.mjs')], { stdio: 'inherit' })
+    for (const name of ['experiments.test.mjs', 'prediction-v2.test.mjs']) writeFileSync(join(folder, name), readFileSync(new URL(`../tests/${name}`, import.meta.url), 'utf8'))
+    const result = spawnSync(process.execPath, ['--test', join(folder, 'experiments.test.mjs'), join(folder, 'prediction-v2.test.mjs')], { stdio: 'inherit' })
     process.exitCode = result.status ?? 1
   }
 } finally { rmSync(folder, { recursive: true, force: true }) }

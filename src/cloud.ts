@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Launch } from './analytics'
+import type { EngineVersion, WorkspacePreferences } from './predictionTypes'
 
 export type CloudLaunchRow = {
   user_id: string
@@ -23,6 +24,9 @@ export type CloudLaunchRow = {
 export type CloudPreferences = {
   units: 'imperial' | 'metric'
   targetAltitude: number
+  plannerMinMass: number
+  plannerMaxMass: number
+  engineVersion: EngineVersion
 }
 
 export class CloudConflictError extends Error {
@@ -73,12 +77,12 @@ export async function fetchWorkspace(client: Client, userId: string) {
   if (launchResult.error) throw launchResult.error
   if (preferenceResult.error) throw preferenceResult.error
   const rows = (launchResult.data ?? []) as CloudLaunchRow[]
-  const preference = preferenceResult.data as { units?: 'imperial' | 'metric'; target_altitude?: number } | null
+  const preference = preferenceResult.data as { units?: 'imperial' | 'metric'; target_altitude?: number; planner_min_mass?: number; planner_max_mass?: number; engine_version?: EngineVersion } | null
   return {
     launches: rows.map(rowToLaunch),
     versions: Object.fromEntries(rows.map((row) => [row.launch_id, row.version])),
     preferences: preference
-      ? { units: preference.units ?? 'imperial', targetAltitude: preference.target_altitude ?? 800 }
+      ? { units: preference.units ?? 'imperial', targetAltitude: preference.target_altitude ?? 800, plannerMinMass: preference.planner_min_mass ?? 500, plannerMaxMass: preference.planner_max_mass ?? 700, engineVersion: preference.engine_version ?? 'current-v2' }
       : null,
   }
 }
@@ -109,6 +113,8 @@ export async function deleteLaunch(client: Client, userId: string, launchId: str
 }
 
 export async function savePreferences(client: Client, userId: string, preferences: CloudPreferences) {
-  const { error } = await client.from('user_preferences').upsert({ user_id: userId, units: preferences.units, target_altitude: preferences.targetAltitude }, { onConflict: 'user_id' })
+  const { error } = await client.from('user_preferences').upsert({ user_id: userId, units: preferences.units, target_altitude: preferences.targetAltitude, planner_min_mass: preferences.plannerMinMass, planner_max_mass: preferences.plannerMaxMass, engine_version: preferences.engineVersion }, { onConflict: 'user_id' })
   if (error) throw error
 }
+
+export const defaultPreferences: WorkspacePreferences = { units: 'imperial', targetAltitude: 800, plannerMinMass: 500, plannerMaxMass: 700, engineVersion: 'current-v2' }
