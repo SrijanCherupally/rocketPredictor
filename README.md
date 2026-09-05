@@ -96,13 +96,20 @@ Important storage details:
 
 ## How predictions work
 
+The overview now includes a **Flight prediction lab** with separate physics, ridge,
+nearest-flight and neural-network experiments for descent and rocket mass. The original
+algorithms remain unchanged and available for comparison. The lab validates on held-out
+launch dates, shows actual flights, and restricts mass recommendations to logged support.
+See [the app overview and experiment report](docs/APP-OVERVIEW.md) for methods, benchmark
+results, caveats, and the bugs addressed.
+
 ### Basic prediction (altitude)
 
 The basic altitude prediction compares rocket weight with peak altitude from previous flights. It uses a simple linear regression model. At least three flights are needed before it can make a prediction.
 
 ### Weather-aware prediction (altitude)
 
-The weather-aware altitude prediction also considers wind, air pressure, humidity, and temperature. It uses an adjusted regression model for improved accuracy. It needs at least seven flights before it becomes available.
+The original weather-aware altitude prediction also considers wind, air pressure, humidity, and temperature. It becomes available at four flights; this minimum alone does not establish accuracy. The experimental lab compares held-out performance against simpler models.
 
 ### Descent time prediction
 
@@ -116,6 +123,8 @@ The descent time prediction estimates how long a parachute descent will take bas
 | `npm run build` | Checks the code and creates the production files |
 | `npm run lint` | Checks the code for common problems |
 | `npm run preview` | Lets you preview the production build locally |
+| `npm test` | Checks model invariants, validation isolation and range handling |
+| `npm run benchmark` | Compares models on the bundled example flights |
 
 Before publishing changes, run:
 
