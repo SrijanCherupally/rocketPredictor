@@ -91,7 +91,7 @@ export async function fetchWorkspace(client: Client, userId: string) {
     launches: rows.map(rowToLaunch),
     versions: Object.fromEntries(rows.map((row) => [row.launch_id, row.version])),
     preferences: preference
-      ? { units: preference.units ?? 'imperial', targetAltitude: preference.target_altitude ?? 800, plannerMinMass: preference.planner_min_mass ?? 500, plannerMaxMass: preference.planner_max_mass ?? 700, engineVersion: preference.engine_version ?? 'current-v2' }
+      ? { units: preference.units ?? 'imperial', targetAltitude: preference.target_altitude ?? 800, plannerMinMass: preference.planner_min_mass ?? 500, plannerMaxMass: preference.planner_max_mass ?? 700, engineVersion: preference.engine_version ?? 'legacy-v1' }
       : null,
   }
 }
@@ -126,4 +126,4 @@ export async function savePreferences(client: Client, userId: string, preference
   if (error) throw error
 }
 
-export const defaultPreferences: WorkspacePreferences = { units: 'imperial', targetAltitude: 800, plannerMinMass: 500, plannerMaxMass: 700, engineVersion: 'current-v2' }
+export const defaultPreferences: WorkspacePreferences = { units: 'imperial', targetAltitude: 800, plannerMinMass: 500, plannerMaxMass: 700, engineVersion: 'legacy-v1' }

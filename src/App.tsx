@@ -22,7 +22,7 @@ type StoredLaunch = Record<string, unknown>
 
 const DEFAULT_TEMPERATURE = 70
 const createEmptyForm = (): FormValues => ({ date: new Date().toISOString().slice(0, 10), altitude: 800, flightTime: 0, descentTime: 0, parachuteSize: 18, rocketMass: 578, windSpeed: 4, airPressure: 29.92, humidity: 50, temperature: DEFAULT_TEMPERATURE, notes: '' })
-const DEFAULT_PREFERENCES: WorkspacePreferences = { units: 'imperial', targetAltitude: 800, plannerMinMass: 500, plannerMaxMass: 700, engineVersion: 'current-v2' }
+const DEFAULT_PREFERENCES: WorkspacePreferences = { units: 'imperial', targetAltitude: 800, plannerMinMass: 500, plannerMaxMass: 700, engineVersion: 'legacy-v1' }
 
 const loadLocalPreferences = (): WorkspacePreferences => {
   try {
@@ -35,7 +35,7 @@ const loadLocalPreferences = (): WorkspacePreferences => {
       targetAltitude: Number.isFinite(parsed.targetAltitude) && Number(parsed.targetAltitude) > 0 ? Number(parsed.targetAltitude) : 800,
       plannerMinMass: Number.isFinite(parsed.plannerMinMass) && Number(parsed.plannerMinMass) > 0 ? Number(parsed.plannerMinMass) : 500,
       plannerMaxMass: Number.isFinite(parsed.plannerMaxMass) && Number(parsed.plannerMaxMass) > Number(parsed.plannerMinMass) ? Number(parsed.plannerMaxMass) : 700,
-      engineVersion: parsed.engineVersion === 'legacy-v1' ? 'legacy-v1' : 'current-v2',
+      engineVersion: parsed.engineVersion === 'current-v2' ? 'current-v2' : 'legacy-v1',
     }
   } catch { return DEFAULT_PREFERENCES }
 }

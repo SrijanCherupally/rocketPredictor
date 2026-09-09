@@ -19,6 +19,11 @@ test('planner preferences are versioned and constrained', () => {
   assert.match(migration, /new\.version = old\.version \+ 1/)
 })
 
+test('new cloud workspaces default to Legacy v1', () => {
+  const migration = read('../supabase/migrations/0004_legacy_engine_default.sql')
+  assert.match(migration, /alter column engine_version set default 'legacy-v1'/)
+})
+
 test('generated output is ignored and Vercel is canonical', () => {
   assert.match(read('../.gitignore'), /^dist\/$/m)
   assert.equal(read('../vercel.json').includes('"framework": "vite"'), true)
