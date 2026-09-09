@@ -96,11 +96,13 @@ Important storage details:
 
 ## How predictions work
 
-The default **Launch Planner** uses the separate Current v2 engine. It automatically selects
+The default **Launch Planner** uses the preserved Legacy v1 engine. It retains the original
+algorithms and experiment workflow for repeatability. **Current v2** remains available in
+Settings; it automatically selects
 an eligible altitude model using launch-day-grouped held-out validation, responds to expected
 wind, pressure, humidity and temperature, and refuses to recommend outside recorded mass support.
 
-**Legacy mode** is available in Settings. It restores the original **Flight prediction lab**
+**Legacy mode** is selected by default and is available in Settings. It restores the original **Flight prediction lab**
 with its physics, ridge, nearest-flight and neural-network experiments. The original
 `analytics.ts` and `experiments.ts` files are protected by source hashes and remain unchanged.
 The legacy lab validates on held-out
