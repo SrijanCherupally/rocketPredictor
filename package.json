@@ -11,6 +11,7 @@
     "test": "npm run test:legacy && node scripts/test.mjs && node --test tests/contracts.test.mjs",
     "test:legacy": "node scripts/verify-legacy.mjs",
     "test:browser": "node scripts/browser-smoke.mjs",
+    "test:analysis-mobile": "node scripts/analysis-mobile-smoke.mjs",
     "typecheck": "tsc -b --pretty false",
     "benchmark": "node scripts/test.mjs --benchmark"
   },

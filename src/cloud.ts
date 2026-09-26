@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { Launch } from './analytics'
+import type { FlightRecord as Launch } from './predictionTypes'
 import type { EngineVersion, WorkspacePreferences } from './predictionTypes'
 
 export type CloudLaunchRow = {
@@ -16,6 +16,7 @@ export type CloudLaunchRow = {
   humidity: number
   temperature: number
   notes: string | null
+  observed_tilt?: Launch['observedTilt']
   version: number
   created_at: string
   updated_at: string
@@ -51,6 +52,9 @@ export const rowToLaunch = (row: CloudLaunchRow): Launch => ({
   humidity: row.humidity,
   temperature: row.temperature,
   notes: row.notes ?? '',
+  observedTilt: row.observed_tilt ?? null,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
 })
 
 const launchToRow = (userId: string, launch: Launch) => ({
@@ -67,13 +71,14 @@ const launchToRow = (userId: string, launch: Launch) => ({
   humidity: launch.humidity,
   temperature: launch.temperature,
   notes: launch.notes ?? '',
+  ...(launch.observedTilt != null ? { observed_tilt: launch.observedTilt } : {}),
 })
 
 export async function fetchWorkspace(client: Client, userId: string) {
   const pageSize = 500
   const allRows: CloudLaunchRow[] = []
   for (let from = 0; ; from += pageSize) {
-    const result = await client.from('launches').select('*').eq('user_id', userId).order('date', { ascending: true }).order('launch_id', { ascending: true }).range(from, from + pageSize - 1)
+    const result = await client.from('launches').select('*').eq('user_id', userId).order('date', { ascending: true }).order('created_at', { ascending: true }).order('launch_id', { ascending: true }).range(from, from + pageSize - 1)
     if (result.error) throw result.error
     const page = (result.data ?? []) as CloudLaunchRow[]
     allRows.push(...page)
@@ -109,7 +114,7 @@ export async function createLaunch(client: Client, userId: string, launch: Launc
 }
 
 export async function updateLaunch(client: Client, userId: string, launch: Launch, expectedVersion: number) {
-  const { data, error } = await client.from('launches').update({ ...launchToRow(userId, launch), version: expectedVersion + 1 }).eq('user_id', userId).eq('launch_id', launch.id).eq('version', expectedVersion).select('*').maybeSingle()
+  const { data, error } = await client.from('launches').update({ ...launchToRow(userId, launch), observed_tilt: launch.observedTilt ?? null, version: expectedVersion + 1 }).eq('user_id', userId).eq('launch_id', launch.id).eq('version', expectedVersion).select('*').maybeSingle()
   if (error) throw error
   if (!data) throw new CloudConflictError()
   return data as CloudLaunchRow

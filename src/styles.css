@@ -468,3 +468,54 @@ nav { display: grid; gap: 4px; } nav button, .sidebar-bottom > button { border: 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Flight editor: only fields scroll; actions stay inside the visible viewport. */
+.modal-backdrop:has(.flight-modal) { height: 100dvh; bottom: auto; padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
+.flight-modal { display: flex; flex-direction: column; max-height: 100%; overflow: hidden; }
+.flight-modal .modal-heading { flex: 0 0 auto; gap: 12px; }
+.flight-modal .modal-heading .icon-button { flex: 0 0 44px; width: 44px; height: 44px; }
+.flight-modal form { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 0; }
+.modal-fields { overflow-y: auto; overscroll-behavior: contain; min-height: 0; padding: 0 25px; scroll-padding: 16px; }
+.flight-modal .modal-actions { flex: 0 0 auto; padding: 12px 25px; background: var(--color-modal-bg); border-top: 1px solid var(--color-border); }
+.flight-modal .modal-actions button { min-height: 44px; }
+.form-field select { display: block; width: 100%; min-height: 44px; margin-top: 7px; padding: 8px; color: var(--color-text-primary); background: var(--color-bg-secondary); border: 1px solid var(--color-border-muted); border-radius: 7px; }
+.flight-analysis { max-width: 1346px; width: calc(100% - 94px); margin: 0 auto 36px; display: grid; gap: 20px; }
+.flight-analysis h2 { margin: 4px 0 14px; font-size: 21px; }
+.flight-analysis p { line-height: 1.65; color: var(--color-text-secondary); }
+.evidence-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.evidence-summary > div { padding: 18px; border: 1px solid var(--color-border); background: var(--color-bg-secondary); border-radius: 10px; }
+.evidence-summary span, .evidence-summary strong { display: block; }
+.evidence-summary span { color: var(--color-text-muted); font-size: 12px; margin-bottom: 8px; }
+.evidence-summary strong { font-size: 19px; }
+.evidence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.flight-analysis .planner-card { min-width: 0; }
+.evidence-heading { display: flex; justify-content: space-between; gap: 18px; }
+.evidence-heading label { font-size: 12px; }
+.evidence-heading select { display: block; margin-top: 8px; min-height: 44px; max-width: 100%; }
+.comparison-pairs > div { display: grid; gap: 7px; padding: 14px 0; border-bottom: 1px solid var(--color-border); font-size: 13px; }
+.tilt-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.tilt-controls label { display: grid; gap: 8px; font-size: 13px; min-width: 0; }
+.next-flight .tilt-controls { margin: 16px 0; }
+.tilt-results { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 20px; }
+.analysis-methods { margin-top: 18px; border-top: 1px solid var(--color-border); padding-top: 14px; }
+.analysis-methods summary { cursor: pointer; color: var(--color-accent-primary); }
+.modal-feedback { flex: 0 0 auto; margin: 0; padding: 10px 17px; color: var(--color-status-warning); background: var(--color-bg-secondary); font-size: 13px; }
+.tilt-controls select, .tilt-controls input { width: 100%; min-height: 44px; border: 1px solid var(--color-border); border-radius: 6px; padding: 8px; background: var(--color-bg-secondary); color: var(--color-text-primary); }
+@media (max-width: 760px) {
+  .flight-analysis { width: calc(100% - 28px); gap: 14px; }
+  .evidence-grid { grid-template-columns: 1fr; gap: 14px; }
+  .evidence-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tilt-results { grid-template-columns: 1fr; }
+  .flight-analysis .planner-card { padding: 18px; }
+  .evidence-heading { flex-direction: column; }
+  .modal-fields { padding: 0 17px; }
+  .flight-modal .modal-actions { padding: 10px 17px; }
+  .flight-modal .modal-actions button { flex: 1; }
+  .flight-modal input, .flight-modal select, .tilt-controls select, .tilt-controls input { font-size: 16px; }
+  .flight-modal .modal-heading { padding-top: 12px; padding-bottom: 12px; }
+  .flight-modal .modal-heading p:not(.eyebrow) { display: none; }
+  .flight-table { grid-template-columns: 1.2fr 1fr 1fr 88px; }
+  .row-actions button { width: 44px; height: 44px; }
+}
+@media (max-width: 380px) { .tilt-controls { grid-template-columns: 1fr; }.evidence-summary strong { font-size: 16px; } }
+@media (max-height: 450px) { .flight-modal .modal-heading .eyebrow { display: none; }.flight-modal .modal-heading { padding-top: 6px; padding-bottom: 6px; } }

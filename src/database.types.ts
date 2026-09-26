@@ -6,6 +6,7 @@ export type Database = {
           user_id: string; launch_id: string; date: string; altitude: number; flight_time: number; descent_time: number
           parachute_size: number; rocket_mass: number; wind_speed: number; air_pressure: number; humidity: number
           temperature: number; notes: string; version: number; created_at: string; updated_at: string; rocket_id: string | null
+          observed_tilt?: 'straight' | 'slight' | 'strong' | null
         }
         Insert: Omit<Database['public']['Tables']['launches']['Row'], 'created_at' | 'updated_at' | 'rocket_id' | 'version'> & { version?: number; rocket_id?: string | null }
         Update: Partial<Database['public']['Tables']['launches']['Insert']>

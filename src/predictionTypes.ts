@@ -4,6 +4,7 @@ export type EngineVersion = 'legacy-v1' | 'current-v2'
 export type Units = 'imperial' | 'metric'
 
 export type FlightRecord = Launch & {
+  observedTilt?: 'straight' | 'slight' | 'strong' | null
   schemaVersion?: 2
   version?: number
   createdAt?: string
