@@ -229,8 +229,7 @@ function App() {
     stopSessionRestore.current = stopRestore
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       if (mounted) {
-        if (guestSelected.current && _event !== 'SIGNED_IN') return
-        guestSelected.current = false
+        if (guestSelected.current) return
         stopRestore()
         setAuthRestoreError('')
         setAuthReady(true)
@@ -467,6 +466,7 @@ function App() {
   const submitAuth = async (event: React.FormEvent) => {
     event.preventDefault()
     if (!supabase) return
+    guestSelected.current = false
     setAuthBusy(true); setAuthMessage(''); setCloudError('')
     try {
       if (authMode === 'reset') {
