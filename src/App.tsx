@@ -6,6 +6,7 @@ import { CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveContainer,
 import { adjustedAltitude, adjustedRegression, descentRegression, linearRegression, optimalRocketMass, predictAdjustedAltitude, predictDescentTime, totalMass, variableImpactConfidence, variableWeights, type DescentConditions, type WeatherReference } from './analytics'
 import { CloudConflictError, createLaunch, deleteLaunch, fetchWorkspace, importLaunches, savePreferences, updateLaunch, type CloudLaunchRow } from './cloud'
 import { isCloudConfigured, supabase } from './supabase'
+import { watchSessionRestore } from './authStartup'
 import { MassRangeControl } from './MassRangeControl'
 import { clampMassRange } from './massRange'
 import { validConditions, conditionsFor } from './experiments'
@@ -163,6 +164,9 @@ function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [guestMode, setGuestMode] = useState(false)
   const [authReady, setAuthReady] = useState(!isCloudConfigured)
+  const [authRestoreError, setAuthRestoreError] = useState('')
+  const stopSessionRestore = useRef<(() => void) | null>(null)
+  const guestSelected = useRef(false)
   const [cloudLoading, setCloudLoading] = useState(false)
   const [cloudError, setCloudError] = useState('')
   const [online, setOnline] = useState(() => navigator.onLine)
@@ -213,17 +217,28 @@ function App() {
   useEffect(() => {
     if (!supabase) return
     let mounted = true
-    supabase.auth.getSession().then(({ data, error }) => {
+    const stopRestore = watchSessionRestore(() => supabase!.auth.getSession(), (restoredSession) => {
       if (!mounted) return
-      if (error) setCloudError(error.message)
-      if (data.session) { setCloudLoading(true); setGuestMode(false) }
-      setSession(data.session)
+      setAuthRestoreError('')
+      if (restoredSession) { setCloudLoading(true); setGuestMode(false) }
+      setSession(restoredSession)
       setAuthReady(true)
+    }, (message) => {
+      if (mounted) setAuthRestoreError(message)
     })
+    stopSessionRestore.current = stopRestore
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      if (mounted) { if (nextSession) { setCloudLoading(true); setGuestMode(false) } setSession(nextSession) }
+      if (mounted) {
+        if (guestSelected.current && _event !== 'SIGNED_IN') return
+        guestSelected.current = false
+        stopRestore()
+        setAuthRestoreError('')
+        setAuthReady(true)
+        if (nextSession) { setCloudLoading(true); setGuestMode(false) }
+        setSession(nextSession)
+      }
     })
-    return () => { mounted = false; listener.subscription.unsubscribe() }
+    return () => { mounted = false; stopRestore(); listener.subscription.unsubscribe() }
   }, [])
 
   useEffect(() => {
@@ -505,7 +520,7 @@ function App() {
     setToast('Using cloud data · local backup left unchanged')
   }
 
-  if (!authReady) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><strong>apexFlite</strong></div><h1>Connecting to your workspace…</h1><p>Restoring your secure cloud session.</p><div className="loading-line" /></div></div>
+  if (!authReady) return <div className="auth-shell"><div className="auth-card"><div className="brand auth-brand"><div className="brand-mark"><Rocket size={20} /></div><strong>apexFlite</strong></div><h1>{authRestoreError ? 'Unable to connect to your workspace' : 'Connecting to your workspace…'}</h1>{authRestoreError ? <><p role="alert">{authRestoreError}</p><button className="primary-button" onClick={() => window.location.reload()}>Try connecting again</button><button className="secondary-button auth-guest" onClick={() => { guestSelected.current = true; stopSessionRestore.current?.(); setGuestMode(true); setAuthReady(true) }}>Continue as guest on this device</button><small className="auth-note">Guest mode uses records saved in this browser. Cloud records stay in your account.</small></> : <><p>Restoring your secure cloud session.</p><div className="loading-line" /></>}</div></div>
   if (isCloudConfigured && !session && !guestMode) return <AuthScreen mode={authMode} setMode={(mode) => { setAuthMode(mode); setAuthMessage(''); setCloudError(''); setResendEmail('') }} email={authEmail} setEmail={setAuthEmail} password={authPassword} setPassword={setAuthPassword} busy={authBusy} message={authMessage} error={cloudError} onSubmit={submitAuth} resendEmail={resendEmail} resendBusy={resendBusy} onResend={resendVerification} onGuest={() => setGuestMode(true)} />
   const graphFilters = <section className="graph-filters"><div><span>GRAPH FILTERS</span><strong>Explore your launch envelope</strong></div><label className="date-filter"> <span className="date-filter-heading"><span>Launch date</span><b>{new Date(selectedDateWindow[0]).toLocaleDateString()} – {new Date(selectedDateWindow[1]).toLocaleDateString()}</b></span><span className="date-slider"><span className="date-slider-track" /><span className="date-slider-fill" style={{ left: `${((selectedDateWindow[0] - graphBounds.minDate) / Math.max(1, graphBounds.maxDate - graphBounds.minDate)) * 100}%`, right: `${100 - ((selectedDateWindow[1] - graphBounds.minDate) / Math.max(1, graphBounds.maxDate - graphBounds.minDate)) * 100}%` }} /><input aria-label="Start launch date" type="range" min={graphBounds.minDate} max={graphBounds.maxDate} value={selectedDateWindow[0]} onChange={(event) => setDateWindow([Math.min(Number(event.target.value), selectedDateWindow[1]), selectedDateWindow[1]])} /><input aria-label="End launch date" type="range" min={graphBounds.minDate} max={graphBounds.maxDate} value={selectedDateWindow[1]} onChange={(event) => setDateWindow([selectedDateWindow[0], Math.max(Number(event.target.value), selectedDateWindow[0])])} /></span></label><button className="text-button" onClick={() => { setZoomReset(current => current + 1); setDateWindow(null) }}>Reset</button></section>
   const syncStatus = !online ? 'Offline · cloud updates paused' : cloudLoading ? 'Syncing…' : session ? 'Synced online' : 'Local preview mode'
